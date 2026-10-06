@@ -46,7 +46,7 @@ for (let seed = 1; seed <= N; seed++) {
     s = step(s, a);
   }
   for (const e of s.log) {
-    if (e.t === 'skill') bump(`${e.sub}(${{ wusheng: 'use', longdan: 'use', paoxiao: 'lock', jianxiong: 'trigger', fankui: 'trigger', guicai: 'trigger', kurou: 'active', wushuang: 'lock', xiaoji: 'trigger', lijian: 'active', biyue: 'trigger', guanxing: 'active', kongcheng: 'lock', luoshen: 'trigger', qingguo: 'use', guose: 'use', liuli: 'trigger', qixi: 'use' }[e.sub]})`);
+    if (e.t === 'skill') bump(`${e.sub}(${{ wusheng: 'use', longdan: 'use', paoxiao: 'lock', jianxiong: 'trigger', fankui: 'trigger', guicai: 'trigger', kurou: 'active', wushuang: 'lock', xiaoji: 'trigger', lijian: 'active', biyue: 'trigger', guanxing: 'active', kongcheng: 'lock', luoshen: 'trigger', qingguo: 'use', guose: 'use', liuli: 'trigger', qixi: 'use', mashu: 'lock', tieji: 'trigger', ganglie: 'trigger', zhiheng: 'active', rende: 'active', qingnang: 'active', jijiu: 'use' }[e.sub]})`);
     else if (e.t === 'ability') bump(`ability:${e.sub}`);
     else if (e.t === 'negate') bump('wuxie(negate)');
   }

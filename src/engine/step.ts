@@ -11,6 +11,7 @@ import {
   hasShaMaterial,
   hasSkill,
   isKongcheng,
+  isRedCard,
 } from './skills';
 import type {
   Action,
@@ -74,6 +75,7 @@ export function seatDistance(s: GameState, from: number, to: number): number {
   const gap = Math.abs(ti - fi);
   let d = Math.min(gap, n - gap);
   if (s.players[from]!.equipment.jian1ma) d -= 1;
+  if (hasSkill(s.players[from]!, 'mashu')) d -= 1; // 马术（马超·锁定）
   if (s.players[to]!.equipment.jia1ma) d += 1;
   return Math.max(d, 1);
 }
@@ -201,6 +203,27 @@ function validate(s: GameState, pend: Inquiry, a: Action): void {
         if (a.sub === 'kurou') {
           if (!hasSkill(actor, 'kurou')) throw new Error('你没有该技能');
           if (actor.hp <= 1) throw new Error('体力不足，不能发动【苦肉】');
+        } else if (a.sub === 'zhiheng') {
+          if (!hasSkill(actor, 'zhiheng')) throw new Error('你没有该技能');
+          if (s.usedSkills.includes('zhiheng')) throw new Error('【制衡】每回合限一次');
+          if (!a.cardIds || a.cardIds.length === 0) throw new Error('【制衡】至少弃置一张手牌');
+          if (new Set(a.cardIds).size !== a.cardIds.length || !a.cardIds.every(id => hasCard(id)))
+            throw new Error('弃置的牌不合法');
+        } else if (a.sub === 'rende') {
+          if (!hasSkill(actor, 'rende')) throw new Error('你没有该技能');
+          if (s.usedSkills.includes('rende')) throw new Error('【仁德】每回合限一次');
+          if (!a.cardIds || a.cardIds.length === 0) throw new Error('【仁德】至少给出一张手牌');
+          if (new Set(a.cardIds).size !== a.cardIds.length || !a.cardIds.every(id => hasCard(id)))
+            throw new Error('给出的牌不合法');
+          const t = a.targetIds?.[0] == null ? undefined : s.players[a.targetIds[0]];
+          if (!t || !t.alive || t.id === actor.id) throw new Error('【仁德】目标不合法');
+        } else if (a.sub === 'qingnang') {
+          if (!hasSkill(actor, 'qingnang')) throw new Error('你没有该技能');
+          if (s.usedSkills.includes('qingnang')) throw new Error('【青囊】每回合限一次');
+          if (a.cardId == null || !hasCard(a.cardId)) throw new Error('【青囊】需要弃置一张手牌');
+          const t = a.targetIds?.[0] == null ? undefined : s.players[a.targetIds[0]];
+          if (!t || !t.alive) throw new Error('【青囊】目标不合法');
+          if (t.hp >= t.maxHp) throw new Error('【青囊】目标体力已满');
         } else if (a.sub === 'lijian') {
           if (!hasSkill(actor, 'lijian')) throw new Error('你没有该技能');
           if (s.usedSkills.includes('lijian')) throw new Error('【离间】每回合限一次');
@@ -259,7 +282,12 @@ function validate(s: GameState, pend: Inquiry, a: Action): void {
       break;
     case 'respondTao':
       if (a.type !== 'respondTao') throw new Error('应答类型不合法');
-      if (a.cardId != null && !hasCard(a.cardId, 'tao')) throw new Error('手中没有这张【桃】');
+      if (a.cardId != null) {
+        const c = actor.hand.find(x => x.id === a.cardId);
+        if (!c) throw new Error('手中没有这张牌');
+        if (c.sub !== 'tao' && !(hasSkill(actor, 'jijiu') && isRedCard(c)))
+          throw new Error('这张牌不能当【桃】使用');
+      }
       break;
     case 'trigger':
       if (a.type !== 'respondTrigger') throw new Error('应答类型不合法');
@@ -423,6 +451,35 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
         hurt(s, actor.id, 1, undefined);
         drawCards(s, actor.id, 2);
         s.log.push({ t: 'draw', player: actor.id, n: 2 });
+      } else if (a.sub === 'zhiheng') {
+        // 制衡：弃任意张手牌并摸等量的牌
+        const ids = new Set(a.cardIds!);
+        const kept: Card[] = [];
+        for (const c of actor.hand) (ids.has(c.id) ? s.discard : kept).push(c);
+        actor.hand = kept;
+        s.log.push({ t: 'skill', player: actor.id, sub: 'zhiheng', detail: `弃置 ${a.cardIds!.length} 张，摸 ${a.cardIds!.length} 张` });
+        s.log.push({ t: 'discardCards', player: actor.id, n: a.cardIds!.length });
+        drawCards(s, actor.id, a.cardIds!.length);
+        s.log.push({ t: 'draw', player: actor.id, n: a.cardIds!.length });
+      } else if (a.sub === 'rende') {
+        // 仁德：把手牌交给一名其他角色；给出不少于两张则回复1点体力
+        const t = s.players[a.targetIds![0]!]!;
+        const ids = new Set(a.cardIds!);
+        const kept: Card[] = [];
+        for (const c of actor.hand) (ids.has(c.id) ? t.hand : kept).push(c);
+        actor.hand = kept;
+        s.log.push({ t: 'skill', player: actor.id, sub: 'rende', detail: `将 ${a.cardIds!.length} 张手牌交给 ${t.name}` });
+        if (a.cardIds!.length >= 2 && actor.hp < actor.maxHp) {
+          actor.hp += 1;
+          s.log.push({ t: 'heal', player: actor.id, amount: 1 });
+        }
+      } else if (a.sub === 'qingnang') {
+        // 青囊：弃一张手牌，令一名已受伤角色回复1点体力（不占出桃次数）
+        const t = s.players[a.targetIds![0]!]!;
+        s.discard.push(removeFromHand(actor, a.cardId!));
+        s.log.push({ t: 'skill', player: actor.id, sub: 'qingnang', detail: `${t.name} 回复1点体力` });
+        t.hp += 1;
+        s.log.push({ t: 'heal', player: t.id, amount: 1 });
       } else if (a.sub === 'lijian') {
         // 离间：弃一张手牌，视为第一名男性对第二名男性使用【决斗】
         // （被弃的手牌即决斗帧的因果牌，入弃牌堆；可被无懈可击抵消）
@@ -561,8 +618,12 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       const asked = [...(pend.askedIds ?? []), actor.id];
       s.pending = null;
       if (a.cardId != null) {
-        s.discard.push(removeFromHand(actor, a.cardId));
+        const card = removeFromHand(actor, a.cardId);
+        s.discard.push(card);
         dying.hp += 1;
+        if (card.sub !== 'tao') {
+          s.log.push({ t: 'skill', player: actor.id, sub: 'jijiu', detail: `将【${CARD_INFO[card.sub].display}】当【桃】使用` });
+        }
         s.log.push({ t: 'respond', player: actor.id, card: 'tao', resp: 'tao' });
         s.log.push({ t: 'heal', player: dying.id, amount: 1 });
         if (dying.hp <= 0) askNextTao(s, dying.id, pend.shaSourceId ?? null, asked);
@@ -714,7 +775,7 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
 // —— 杀的结算（M5：统一走 ShaFrame，逐目标推进） ——
 
 function startSha(s: GameState, sourceId: number, cardId: number, targets: number[]): void {
-  s.frames.push({ kind: 'sha', id: s.frameSeq++, userId: sourceId, cardId, targets, idx: 0, cixiongDone: [], liuliDone: [] });
+  s.frames.push({ kind: 'sha', id: s.frameSeq++, userId: sourceId, cardId, targets, idx: 0, cixiongDone: [], liuliDone: [], tiejiTried: [], tiejiHit: [] });
 }
 
 /** 杀帧推进到下一目标（当前目标已闪避/被贯石斧命中/弃牌取消/死亡） */
@@ -763,6 +824,25 @@ function stepSha(s: GameState, f: ShaFrame): void {
       s.pending = { kind: 'liuli', playerId: target.id, frameId: f.id, liuliTo: to, liuliSourceId: source.id };
       return;
     }
+  }
+  // 铁骑（马超）：指定目标后判定，红色则此目标不可闪避（每目标判定一次）
+  if (hasSkill(source, 'tieji') && source.alive && !f.tiejiTried.includes(target.id)) {
+    f.tiejiTried.push(target.id);
+    beginJudge(s, {
+      forId: source.id,
+      reason: 'tieji',
+      result: drawJudgeCard(s, source.id, 'tieji'),
+      mode: 'tieji',
+      tiejiFrameId: f.id,
+      tiejiTargetId: target.id,
+    });
+    return;
+  }
+  if (f.tiejiHit.includes(target.id)) {
+    s.log.push({ t: 'skill', player: source.id, sub: 'tieji', detail: `${target.name} 不可用【闪】响应` });
+    shaHit(s, source.id, target.id, f.cardId);
+    f.idx += 1;
+    return;
   }
   // 青釭剑：无视八卦阵
   const ignoreShield = source.equipment.weapon?.sub === 'qinggang';
@@ -875,6 +955,20 @@ function dealDamage(s: GameState, targetId: number, amount: number, sourceId?: n
     const src = s.players[sourceId]!;
     if (hasAnyCard(src)) queueTrigger(s, { sub: 'fankui', playerId: targetId, sourceId });
   }
+  if (
+    target.hp > 0 &&
+    hasSkill(target, 'ganglie') &&
+    sourceId != null &&
+    sourceId !== targetId
+  ) {
+    beginJudge(s, {
+      forId: targetId,
+      reason: 'ganglie',
+      result: drawJudgeCard(s, targetId, 'ganglie'),
+      mode: 'ganglie',
+      ganglieSourceId: sourceId,
+    });
+  }
   if (target.hp <= 0) {
     s.log.push({ t: 'dying', player: targetId });
     // 濒死求桃：从濒死玩家自己开始按座次询问；每条询问链每人至多用一张桃（简化）
@@ -932,6 +1026,25 @@ function resolveJudge(s: GameState): void {
       else shaDodged(s, pend.shaSourceId!, actor.id, pend.frameId, pend.shaCardId);
     } else {
       s.pending = { ...pend, baguaTried: true };
+    }
+    return;
+  }
+  if (js.mode === 'tieji') {
+    // 铁骑：判定红色 → 目标不可用闪响应（记入杀帧，stepSha 重入时直接命中）
+    if (jc.suit === '♥' || jc.suit === '♦') {
+      const f = s.frames.find(fr => fr.id === js.tiejiFrameId);
+      if (f && f.kind === 'sha') f.tiejiHit.push(js.tiejiTargetId!);
+    }
+    return;
+  }
+  if (js.mode === 'ganglie') {
+    // 刚烈：非红桃 → 伤害来源受到1点反伤（来源=夏侯惇）
+    if (jc.suit !== '♥' && js.ganglieSourceId != null) {
+      const src = s.players[js.ganglieSourceId]!;
+      if (src.alive) {
+        s.log.push({ t: 'skill', player: js.forId, sub: 'ganglie', detail: `${src.name} 受到1点反伤` });
+        dealDamage(s, src.id, 1, js.forId);
+      }
     }
     return;
   }
@@ -1326,7 +1439,11 @@ function askNextTao(s: GameState, dyingId: number, sourceId: number | null, aske
   const n = s.players.length;
   for (let k = 0; k < n; k++) {
     const p = s.players[(dyingId + k) % n]!;
-    if (p.alive && !askedIds.includes(p.id) && p.hand.some(c => c.sub === 'tao')) {
+    // 有真桃，或持有急救且有红色手牌（华佗：回合外红牌当桃）都可被询问
+    const canSave =
+      p.hand.some(c => c.sub === 'tao') ||
+      (hasSkill(p, 'jijiu') && p.hand.some(c => isRedCard(c)));
+    if (p.alive && !askedIds.includes(p.id) && canSave) {
       s.pending = { kind: 'respondTao', playerId: p.id, dyingId, shaSourceId: sourceId ?? undefined, askedIds };
       return;
     }

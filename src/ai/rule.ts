@@ -3,7 +3,7 @@
 // 已知局限（记录在案）：不使用无懈可击、不用闪电、鬼才只优化自己的判定、
 // 丈八蛇矛仅在无普通杀素材且手牌≥3 时动用、方天画戟不用在丈八两牌上。
 import { canPlayShaNow, hasAnyCard, inShaRange, seatDistance } from '../engine/step';
-import { canActAsSha, canActAsShan, hasSkill, isBlackCard, isKongcheng } from '../engine/skills';
+import { canActAsSha, canActAsShan, hasSkill, isBlackCard, isKongcheng, isRedCard } from '../engine/skills';
 import { CARD_INFO, GENERAL_SEX } from '../engine/types';
 import type { Action, Card, CardSub, GameState, PlayerState } from '../engine/types';
 import { viewOf } from '../engine/view';
@@ -63,6 +63,21 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
   })();
   const first = (sub: CardSub): Card | undefined => hand.find(c => c.sub === sub);
 
+  // 盟友（青囊/仁德受益人）：主公+忠臣同侧；反贼为反贼队友；内奸只认自己
+  const allies: number[] = (() => {
+    const others = v.players.filter(p => p.alive && p.id !== playerId);
+    switch (v.me.identity) {
+      case 'zhu':
+        return others.filter(p => p.isZhu || p.identity === 'zhong' || p.identity === 'zhu').map(p => p.id);
+      case 'zhong':
+        return others.filter(p => p.isZhu || p.identity === 'zhong').map(p => p.id);
+      case 'fan':
+        return others.filter(p => p.identity === 'fan').map(p => p.id);
+      default:
+        return [];
+    }
+  })();
+
   switch (pend.kind) {
     case 'play': {
       // 1. 无中生有必用
@@ -74,6 +89,31 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
       // 2.5 苦肉：手牌紧张且体力有余时换两张（每回合限一次）
       if (hasSkill(me, 'kurou') && meP.hp >= 3 && hand.length <= 3 && !s.usedSkills.includes('kurou')) {
         return { type: 'useSkill', sub: 'kurou' };
+      }
+      // 2.6 青囊（华佗）：弃最不值钱的牌奶最缺血的友方/自己
+      if (hasSkill(me, 'qingnang') && !s.usedSkills.includes('qingnang') && hand.length >= 2) {
+        const wounded = [me.id, ...allies]
+          .map(id => s.players[id]!)
+          .filter(p => p.alive && p.hp < p.maxHp)
+          .sort((a, b) => a.hp - b.hp);
+        if (wounded.length > 0) {
+          return { type: 'useSkill', sub: 'qingnang', cardId: cheapest(hand, 1)[0]!.id, targetIds: [wounded[0]!.id] };
+        }
+      }
+      // 2.7 制衡（孙权）：多余牌换手（手牌≥4 且本回合还没动过关键锦囊时）
+      if (hasSkill(me, 'zhiheng') && !s.usedSkills.includes('zhiheng') && hand.length >= 4) {
+        const junk = hand.filter(c => cardValue(c) === 0 || (cardValue(c) === 1 && hand.filter(x => x.sub === 'sha').length > 1));
+        if (junk.length >= 2) {
+          return { type: 'useSkill', sub: 'zhiheng', cardIds: junk.map(c => c.id) };
+        }
+      }
+      // 2.8 仁德（刘备）：给主公/队友送牌补血（给出≥2张回1血）
+      if (hasSkill(me, 'rende') && !s.usedSkills.includes('rende') && hand.length >= 3) {
+        const recipient = allies.find(id => s.players[id]!.alive);
+        if (recipient != null && (me.hp < me.maxHp || hand.length >= 5)) {
+          const give = cheapest(hand, Math.min(2, hand.length - 1)).map(c => c.id);
+          if (give.length === 2) return { type: 'useSkill', sub: 'rende', cardIds: give, targetIds: [recipient] };
+        }
       }
       // 3. 装备：换更大范围的武器、补缺的装备
       const curW = me.equipment.weapon;
@@ -267,7 +307,12 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
     case 'respondTao': {
       const dying = v.players.find(p => p.id === pend.dyingId)!;
       const worthSaving = playerId === dying.id || (v.me.identity === 'zhong' && dying.isZhu);
-      const tao = worthSaving ? first('tao') : undefined;
+      // 桃优先；华佗急救助手：红色非桃手牌当桃（手牌≥2 时保留最后一张自救）
+      const tao =
+        (worthSaving ? first('tao') : undefined) ??
+        (worthSaving && hasSkill(me, 'jijiu') && hand.length >= 2
+          ? hand.find(c => c.sub !== 'tao' && c.sub !== 'shan' && isRedCard(c))
+          : undefined);
       return { type: 'respondTao', cardId: tao ? tao.id : null };
     }
     case 'discard': {

@@ -19,6 +19,8 @@ const REASON_NAMES: Record<string, string> = {
   shandian: '闪电',
   bagua: '八卦阵',
   luoshen: '洛神',
+  tieji: '铁骑',
+  ganglie: '刚烈',
 };
 const PHASE_NAMES: Record<Phase, string> = { judge: '判定阶段', draw: '摸牌阶段', play: '出牌阶段', discard: '弃牌阶段' };
 
@@ -29,6 +31,7 @@ const AVATAR_PINYIN: Record<string, string> = {
   孙尚香: 'sunshangxiang', 貂蝉: 'diaochan',
   诸葛亮: 'zhugeliang', 甄姬: 'zhenji',
   大乔: 'dajiao', 甘宁: 'ganning',
+  马超: 'machao', 孙权: 'sunquan', 夏侯惇: 'xiahoudun', 刘备: 'liubei', 华佗: 'huatuo',
 };
 const AVATAR_COLORS: Record<string, [string, string]> = {
   liubei: ['#2c5f8a', '#5b9bd5'],
@@ -46,6 +49,11 @@ const AVATAR_COLORS: Record<string, [string, string]> = {
   zhenji: ['#2a3a5c', '#6a8ac4'],
   dajiao: ['#3a5c2a', '#7ab04a'],
   ganning: ['#2a2a3a', '#6a6a8a'],
+  machao: ['#5c3a1a', '#b07a3a'],
+  sunquan: ['#1a3a5c', '#3a7ab0'],
+  xiahoudun: ['#3a1a2a', '#8a3a5a'],
+  liubei: ['#2c5f8a', '#5b9bd5'],
+  huatuo: ['#1f4a3a', '#3a9e7a'],
   baiban: ['#333', '#666'],
 };
 const avatarFailed = ref<Set<string>>(new Set());
@@ -94,6 +102,9 @@ const lijianCard = ref<Card | null>(null);
 const lijianTargets = ref<number[]>([]);
 /** 观星：点选置顶的牌（顺序即摸取顺序） */
 const guanxingPick = ref<number[]>([]);
+/** 通用主动技多选（M10）：制衡/仁德/青囊——先点技按钮，再点手牌，最后点确认/目标 */
+const activeMode = ref<'zhiheng' | 'rende' | 'qingnang' | null>(null);
+const activeSel = ref<number[]>([]);
 /** 流离两步：点一张手牌弃置 → 点要转移给的男性 */
 const liuliPick = ref<Card | null>(null);
 const discardSel = ref<number[]>([]);
@@ -317,6 +328,8 @@ function act(a: Action) {
   guanshiSel.value = [];
   guanxingPick.value = [];
   liuliPick.value = null;
+  activeMode.value = null;
+  activeSel.value = [];
   resetLijian();
   refresh();
   scheduleAi();
@@ -344,6 +357,8 @@ function newGame() {
   guanshiSel.value = [];
   guanxingPick.value = [];
   liuliPick.value = null;
+  activeMode.value = null;
+  activeSel.value = [];
   resetLijian();
   replayIdx.value = null;
   arrows.value = [];
@@ -509,6 +524,21 @@ function zhangbaHint(c: Card): string | null {
   return zhangbaOn.value && c.sub !== 'tao' ? '丈八' : null;
 }
 
+/** 通用主动技的提示文案 */
+const activeModePrompt = computed(() => {
+  const n = activeSel.value.length;
+  switch (activeMode.value) {
+    case 'zhiheng':
+      return `点手牌选择要弃置的牌（已选 ${n} 张）`;
+    case 'rende':
+      return `点手牌选择要给出的牌（已选 ${n} 张）——再点一名其他角色赠予`;
+    case 'qingnang':
+      return n === 0 ? '点一张手牌作为代价' : '再点一名已受伤的角色';
+    default:
+      return '';
+  }
+});
+
 /** 我的技能是否处于可发动状态（座次与提示条共用） */
 const mySkillReady = computed(() => {
   const g = myGeneral.value;
@@ -536,6 +566,14 @@ function seatSkillOn(pid: number): boolean {
 
 function isTargetable(pid: number): boolean {
   const sel = selected.value;
+  if (activeMode.value === 'rende') {
+    const t = view.value.players[pid]!;
+    return activeSel.value.length > 0 && t.alive && pid !== humanId.value;
+  }
+  if (activeMode.value === 'qingnang') {
+    const t = view.value.players[pid]!;
+    return activeSel.value.length === 1 && t.alive && t.hp < t.maxHp;
+  }
   if (lijianMode.value && lijianCard.value) {
     const t = view.value.players[pid]!;
     return t.alive && t.id !== humanId.value && t.sex === 'm';
@@ -561,6 +599,14 @@ function onCardClick(c: Card) {
   if (pend.value?.kind === 'play') {
     if (lijianMode.value) {
       if (!lijianCard.value) lijianCard.value = c; // 第一步：选弃置的手牌
+      return;
+    }
+    if (activeMode.value) {
+      // 制衡/仁德：多选切换；青囊：单选（点新牌替换）
+      const i = activeSel.value.indexOf(c.id);
+      if (activeMode.value === 'qingnang') activeSel.value = i >= 0 ? [] : [c.id];
+      else if (i >= 0) activeSel.value.splice(i, 1);
+      else activeSel.value.push(c.id);
       return;
     }
     // 丈八蛇矛：已选中一张杀素材时，再点任意不同手牌 → 组成两张当杀
@@ -631,6 +677,18 @@ function onGuanxingClick(c: Card) {
 }
 
 function onSeatClick(pid: number) {
+  if (activeMode.value === 'rende') {
+    const t = view.value.players[pid]!;
+    if (!t.alive || pid === humanId.value || activeSel.value.length === 0) return;
+    act({ type: 'useSkill', sub: 'rende', cardIds: [...activeSel.value], targetIds: [pid] });
+    return;
+  }
+  if (activeMode.value === 'qingnang') {
+    const t = view.value.players[pid]!;
+    if (!t.alive || t.hp >= t.maxHp || activeSel.value.length !== 1) return;
+    act({ type: 'useSkill', sub: 'qingnang', cardId: activeSel.value[0], targetIds: [pid] });
+    return;
+  }
   if (lijianMode.value && lijianCard.value) {
     if (!isTargetable(pid)) return;
     lijianSeatClick(pid);
@@ -711,8 +769,18 @@ function respondWuxie(use: boolean) {
   act({ type: 'respondWuxie', cardId: card ? card.id : null });
 }
 
+/** 急救（华佗）：红色非桃手牌可当桃 */
+function jijiuMaterial(): Card | undefined {
+  return me.value?.hand.find(c => c.sub !== 'tao' && isRedCard(c));
+}
+
 function respondTao(use: boolean) {
   const card = use ? me.value?.hand.find(c => c.sub === 'tao') : undefined;
+  act({ type: 'respondTao', cardId: card ? card.id : null });
+}
+
+function respondTaoAlt() {
+  const card = jijiuMaterial();
   act({ type: 'respondTao', cardId: card ? card.id : null });
 }
 
@@ -872,7 +940,7 @@ function evText(e: GameEvent): string {
 <template>
   <div class="app">
     <header>
-      <h1>三国杀单机 <span class="m1">M9</span></h1>
+      <h1>三国杀单机 <span class="m1">M10</span></h1>
       <div class="meta">
         <span class="seed">seed {{ seed }}</span>
         <span v-if="me" class="badge" :class="'id-' + me.identity">
@@ -1021,7 +1089,16 @@ function evText(e: GameEvent): string {
     <section class="prompt">
       <template v-if="view.winner">对局结束——可用下方回放逐步检视整局。</template>
       <template v-else-if="pend?.kind === 'play'">
-        <template v-if="lijianMode">
+        <template v-if="activeMode">
+          【{{ SKILL_INFO[activeMode].display }}】{{ activeModePrompt }}
+          <button
+            v-if="activeMode === 'zhiheng' && activeSel.length > 0"
+            class="btn"
+            @click="act({ type: 'useSkill', sub: 'zhiheng', cardIds: [...activeSel] })"
+          >确认制衡</button>
+          <button class="btn ghost" @click="activeMode = null; activeSel = []">取消</button>
+        </template>
+        <template v-else-if="lijianMode">
           【离间】{{ !lijianCard ? '点一张手牌弃置' : `已选【${disp(lijianCard.sub)}】——点两名男性角色（先选决斗使用者）` }}（已选 {{ lijianTargets.length }}/2）
           <button class="btn ghost" @click="resetLijian">取消</button>
         </template>
@@ -1050,6 +1127,27 @@ function evText(e: GameEvent): string {
           </button>
           <button v-if="lijianReady && !lijianMode" class="btn" @click="toggleLijian">
             离间（弃1牌 两名男性决斗）
+          </button>
+          <button
+            v-if="mySkills.includes('zhiheng') && !state.usedSkills.includes('zhiheng') && (me?.hand.length ?? 0) >= 1"
+            class="btn"
+            @click="activeMode = 'zhiheng'; activeSel = []"
+          >
+            制衡（弃任意张 摸等量）
+          </button>
+          <button
+            v-if="mySkills.includes('rende') && !state.usedSkills.includes('rende') && (me?.hand.length ?? 0) >= 1"
+            class="btn"
+            @click="activeMode = 'rende'; activeSel = []"
+          >
+            仁德（给牌 2张回1血）
+          </button>
+          <button
+            v-if="mySkills.includes('qingnang') && !state.usedSkills.includes('qingnang') && (me?.hand.length ?? 0) >= 1"
+            class="btn"
+            @click="activeMode = 'qingnang'; activeSel = []"
+          >
+            青囊（弃1牌 目标回1血）
           </button>
           <button class="btn" @click="act({ type: 'endPlay' })">结束出牌</button>
         </template>
@@ -1105,6 +1203,13 @@ function evText(e: GameEvent): string {
       <template v-else-if="pend?.kind === 'respondTao'">
         {{ view.players[view.pending!.dyingId!]!.name }} 濒死 ——
         <button class="btn" :disabled="!hasCardInHand('tao')" @click="respondTao(true)">用【桃】</button>
+        <button
+          v-if="mySkills.includes('jijiu') && !hasCardInHand('tao') && jijiuMaterial()"
+          class="btn"
+          @click="respondTaoAlt()"
+        >
+          用【{{ disp(jijiuMaterial()!.sub) }}】代替（急救）
+        </button>
         <button class="btn" @click="respondTao(false)">不用</button>
       </template>
       <template v-else-if="pend?.kind === 'pickCard'">
@@ -1169,7 +1274,7 @@ function evText(e: GameEvent): string {
         :key="c.id"
         :data-cid="c.id"
         class="card"
-        :class="[c.sub, CARD_INFO[c.sub].kind, { selected: selected?.cardId === c.id || selected2?.id === c.id || discardSel.includes(c.id) || guanshiSel.includes(c.id), clickable: !!pend }]"
+        :class="[c.sub, CARD_INFO[c.sub].kind, { selected: selected?.cardId === c.id || selected2?.id === c.id || discardSel.includes(c.id) || guanshiSel.includes(c.id) || activeSel.includes(c.id) || guanxingPick.includes(c.id) || lijianCard?.id === c.id, clickable: !!pend }]"
         @click="onCardClick(c)"
       >
         <div class="cname" :class="{ long: disp(c.sub).length > 2 }">{{ disp(c.sub) }}</div>

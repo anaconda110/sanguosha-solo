@@ -3,7 +3,7 @@ import { shuffleInPlace } from './rng';
 import { advance } from './step';
 import type { GameState, GeneralSub, Identity } from './types';
 
-// M8 武将池：14 名武将随机洗牌分给 5 个座次（白板不再入池）。技能见 skills.ts / ADR-0010~0014。
+// M10 武将池：19 名武将随机洗牌分给 5 个座次（白板不再入池）。技能见 skills.ts / ADR-0010~0016。
 const GENERAL_POOL: Array<{ name: string; general: GeneralSub }> = [
   { name: '关羽', general: 'guanyu' },
   { name: '张飞', general: 'zhangfei' },
@@ -19,6 +19,11 @@ const GENERAL_POOL: Array<{ name: string; general: GeneralSub }> = [
   { name: '甄姬', general: 'zhenji' },
   { name: '大乔', general: 'dajiao' },
   { name: '甘宁', general: 'ganning' },
+  { name: '马超', general: 'machao' },
+  { name: '孙权', general: 'sunquan' },
+  { name: '夏侯惇', general: 'xiahoudun' },
+  { name: '刘备', general: 'liubei' },
+  { name: '华佗', general: 'huatuo' },
 ];
 
 export function setup(seed: number): GameState {

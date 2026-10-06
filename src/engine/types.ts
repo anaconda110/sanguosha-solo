@@ -71,7 +71,8 @@ export type GeneralSub =
   | 'caocao' | 'simayi' | 'huanggai' | 'zhouyu' | 'lvbu'
   | 'sunshangxiang' | 'diaochan'
   | 'zhugeliang' | 'zhenji'
-  | 'dajiao' | 'ganning';
+  | 'dajiao' | 'ganning'
+  | 'machao' | 'sunquan' | 'xiahoudun' | 'liubei' | 'huatuo';
 
 /** 技能；类型划分：use=用牌转换，trigger=受伤/判定触发，active=主动发动，lock=锁定技 */
 export type SkillSub =
@@ -82,7 +83,12 @@ export type SkillSub =
   | 'lijian' | 'biyue'
   | 'guanxing' | 'kongcheng'
   | 'luoshen' | 'qingguo'
-  | 'guose' | 'liuli' | 'qixi';
+  | 'guose' | 'liuli' | 'qixi'
+  | 'mashu' | 'tieji'
+  | 'ganglie'
+  | 'zhiheng'
+  | 'rende'
+  | 'qingnang' | 'jijiu';
 
 export interface SkillInfo {
   display: string;
@@ -109,6 +115,13 @@ export const SKILL_INFO: Record<SkillSub, SkillInfo> = {
   guose: { display: '国色', kind: 'use', desc: '你可以将一张方块牌当【乐不思蜀】使用' },
   liuli: { display: '流离', kind: 'trigger', desc: '当你成为【杀】的目标时，你可以弃置一张手牌并转移给距离你1以内的一名其他男性角色' },
   qixi: { display: '奇袭', kind: 'use', desc: '你可以将一张黑色牌当【过河拆桥】使用' },
+  mashu: { display: '马术', kind: 'lock', desc: '锁定技，你计算与其他角色的距离时始终-1' },
+  tieji: { display: '铁骑', kind: 'trigger', desc: '当你使用【杀】指定目标后，你可以进行判定：若结果为红色，此【杀】不可被【闪】响应' },
+  ganglie: { display: '刚烈', kind: 'trigger', desc: '当你受到伤害后，你可以进行判定：若结果非红桃，伤害来源受到1点伤害' },
+  zhiheng: { display: '制衡', kind: 'active', desc: '出牌阶段限一次，你可以弃置任意张手牌，然后摸等量的牌' },
+  rende: { display: '仁德', kind: 'active', desc: '出牌阶段限一次，你可以将任意张手牌交给一名其他角色，若给出的牌数不少于两张，你回复1点体力' },
+  qingnang: { display: '青囊', kind: 'active', desc: '出牌阶段限一次，你可以弃置一张手牌并选择一名已受伤的角色，其回复1点体力' },
+  jijiu: { display: '急救', kind: 'use', desc: '你的回合外，你可以将一张红色牌当【桃】使用' },
 };
 
 /** 性别（雌雄双股剑 / 离间依赖） */
@@ -119,6 +132,7 @@ export const GENERAL_SEX: Record<GeneralSub, Sex> = {
   sunshangxiang: 'f', diaochan: 'f',
   zhugeliang: 'm', zhenji: 'f',
   dajiao: 'f', ganning: 'm',
+  machao: 'm', sunquan: 'm', xiahoudun: 'm', liubei: 'm', huatuo: 'm',
 };
 
 export const GENERAL_SKILLS: Record<GeneralSub, SkillSub[]> = {
@@ -137,6 +151,11 @@ export const GENERAL_SKILLS: Record<GeneralSub, SkillSub[]> = {
   zhenji: ['luoshen', 'qingguo'],
   dajiao: ['guose', 'liuli'],
   ganning: ['qixi'],
+  machao: ['mashu', 'tieji'],
+  sunquan: ['zhiheng'],
+  xiahoudun: ['ganglie'],
+  liubei: ['rende'],
+  huatuo: ['qingnang', 'jijiu'],
 };
 
 export const GENERAL_INFO: Record<GeneralSub, { display: string; skill: string }> = Object.fromEntries(
@@ -149,6 +168,7 @@ export const GENERAL_INFO: Record<GeneralSub, { display: string; skill: string }
         sunshangxiang: '孙尚香', diaochan: '貂蝉',
         zhugeliang: '诸葛亮', zhenji: '甄姬',
         dajiao: '大乔', ganning: '甘宁',
+        machao: '马超', sunquan: '孙权', xiahoudun: '夏侯惇', liubei: '刘备', huatuo: '华佗',
       }[g],
       skill: GENERAL_SKILLS[g].map(s => SKILL_INFO[s].display).join('·'),
     },
@@ -220,6 +240,9 @@ export interface ShaFrame {
   cixiongDone: number[];
   /** 已结算过流离转移的目标（每目标一次，防 A/B 互转死循环） */
   liuliDone: number[];
+  /** 铁骑：已判定过的目标 / 判定成功（不可闪避）的目标 */
+  tiejiTried: number[];
+  tiejiHit: number[];
 }
 
 export type Frame = TrickFrame | DelayedFrame | ShaFrame;
@@ -227,17 +250,22 @@ export type Frame = TrickFrame | DelayedFrame | ShaFrame;
 /** 判定结算上下文（M4：翻滚判定牌 → 鬼才询问链 → 生效） */
 export interface JudgeState {
   forId: number;
-  reason: 'lebusi' | 'bingliang' | 'shandian' | 'bagua' | 'luoshen';
+  reason: 'lebusi' | 'bingliang' | 'shandian' | 'bagua' | 'luoshen' | 'tieji' | 'ganglie';
   /** 当前生效的判定牌（可被鬼才替换） */
   result: Card;
   /** 已询问过鬼才的玩家 */
   usedGuicai: number[];
-  mode: 'delayed' | 'bagua' | 'luoshen';
+  mode: 'delayed' | 'bagua' | 'luoshen' | 'tieji' | 'ganglie';
   /** delayed：判定区里的那张延时锦囊（生效时处置） */
   delayedSub?: CardSub;
   zoneCard?: Card;
   /** bagua：触发八卦的原询问（判定完成后继续出闪流程） */
   baguaPend?: Inquiry;
+  /** tieji：所属杀帧与目标（判定完成后标记不可闪避） */
+  tiejiFrameId?: number;
+  tiejiTargetId?: number;
+  /** ganglie：反伤的伤害来源 */
+  ganglieSourceId?: number;
 }
 /** 触发技队列条目（奸雄/反馈），在 pending 清空后、帧推进前消费 */
 export interface PendingTrigger {
@@ -317,7 +345,7 @@ export type GameEvent =
   | { t: 'unequip'; player: number; sub: CardSub }
   | { t: 'gainCard'; player: number; from: number }
   | { t: 'negate'; player: number; sub: CardSub; targetId?: number }
-  | { t: 'judge'; player: number; card: Card; reason: 'lebusi' | 'bingliang' | 'shandian' | 'bagua' | 'luoshen' }
+  | { t: 'judge'; player: number; card: Card; reason: 'lebusi' | 'bingliang' | 'shandian' | 'bagua' | 'luoshen' | 'tieji' | 'ganglie' }
   | { t: 'judgeModify'; player: number; sub: SkillSub; card: Card }
   | { t: 'moveJudgement'; sub: CardSub; from: number; to: number }
   | { t: 'skill'; player: number; sub: SkillSub; detail?: string }
@@ -329,7 +357,7 @@ export type Action =
   | { type: 'playTao'; cardId: number }
   | { type: 'playTrick'; cardId: number; targetId?: number }
   | { type: 'playEquip'; cardId: number }
-  | { type: 'useSkill'; sub: SkillSub; /** 离间：弃置的手牌 */ cardId?: number; /** 离间：两名男性（前者为决斗使用者） */ targetIds?: number[] }
+  | { type: 'useSkill'; sub: SkillSub; /** 离间：弃置的手牌；青囊：弃置的手牌 */ cardId?: number; /** 离间：两名男性（前者为决斗使用者）；仁德/青囊：目标 */ targetIds?: number[]; /** 制衡/仁德：多张手牌 */ cardIds?: number[] }
   | { type: 'endPlay' }
   | { type: 'respondShan'; cardId: number | null }
   | { type: 'respondSha'; cardId: number | null }
