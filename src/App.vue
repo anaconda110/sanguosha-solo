@@ -23,6 +23,8 @@ const REASON_NAMES: Record<string, string> = {
   ganglie: '刚烈',
 };
 const PHASE_NAMES: Record<Phase, string> = { judge: '判定阶段', draw: '摸牌阶段', play: '出牌阶段', discard: '弃牌阶段' };
+/** 花色按钮顺序（反间应答用） */
+const SUIT_LIST: Suit[] = ['♠', '♥', '♣', '♦'];
 
 // —— 立绘（ADR-0009）：程序生成占位徽章；本地素材放 public/avatars/<pinyin>.png 自动覆盖 ——
 const AVATAR_PINYIN: Record<string, string> = {
@@ -102,8 +104,8 @@ const lijianCard = ref<Card | null>(null);
 const lijianTargets = ref<number[]>([]);
 /** 观星：点选置顶的牌（顺序即摸取顺序） */
 const guanxingPick = ref<number[]>([]);
-/** 通用主动技多选（M10）：制衡/仁德/青囊——先点技按钮，再点手牌，最后点确认/目标 */
-const activeMode = ref<'zhiheng' | 'rende' | 'qingnang' | null>(null);
+/** 通用主动技多选（M10/M11）：制衡/仁德/青囊/反间——先点技按钮，再点手牌，最后点确认/目标 */
+const activeMode = ref<'zhiheng' | 'rende' | 'qingnang' | 'fanjian' | null>(null);
 const activeSel = ref<number[]>([]);
 /** 流离两步：点一张手牌弃置 → 点要转移给的男性 */
 const liuliPick = ref<Card | null>(null);
@@ -389,6 +391,12 @@ const canSha = computed(
     myGeneral.value === 'zhangfei',
 );
 const replayTotal = computed(() => state.actionLog.length);
+/** 无懈链（M11）：当前询问所属的帧，供 UI 显示"已被抵消 / 已恢复生效" */
+const wuxieFrame = computed(() => {
+  const p = pend.value;
+  if (p?.kind !== 'respondWuxie' || p.frameId == null) return null;
+  return state.frames.find(f => f.id === p.frameId) ?? null;
+});
 /** 武将图鉴面板开关 */
 const showCodex = ref(false);
 /** 战绩统计面板（M9）：批量规则 AI 自战 */
@@ -534,6 +542,8 @@ const activeModePrompt = computed(() => {
       return `点手牌选择要给出的牌（已选 ${n} 张）——再点一名其他角色赠予`;
     case 'qingnang':
       return n === 0 ? '点一张手牌作为代价' : '再点一名已受伤的角色';
+    case 'fanjian':
+      return n === 0 ? '点一张手牌作为展示牌' : '再点一名其他角色，令其猜花色';
     default:
       return '';
   }
@@ -552,7 +562,12 @@ const mySkillReady = computed(() => {
   if (g === 'huanggai') return (meP.value?.hp ?? 0) > 1;
   if (g === 'lvbu') return true;
   if (g === 'diaochan') return aliveMales.value.length >= 2 && (me.value?.hand.length ?? 0) >= 1;
-  if (g === 'simayi' || g === 'zhouyu' || g === 'caocao') return false; // 触发技：受伤时点亮
+  if (g === 'zhouyu')
+    return (
+      (me.value?.hand.length ?? 0) >= 1 &&
+      view.value.players.some(p => p.alive && p.id !== humanId.value)
+    );
+  if (g === 'simayi' || g === 'caocao') return false; // 触发技：受伤时点亮
   return false;
 });
 
@@ -573,6 +588,10 @@ function isTargetable(pid: number): boolean {
   if (activeMode.value === 'qingnang') {
     const t = view.value.players[pid]!;
     return activeSel.value.length === 1 && t.alive && t.hp < t.maxHp;
+  }
+  if (activeMode.value === 'fanjian') {
+    const t = view.value.players[pid]!;
+    return activeSel.value.length === 1 && t.alive && pid !== humanId.value;
   }
   if (lijianMode.value && lijianCard.value) {
     const t = view.value.players[pid]!;
@@ -602,9 +621,9 @@ function onCardClick(c: Card) {
       return;
     }
     if (activeMode.value) {
-      // 制衡/仁德：多选切换；青囊：单选（点新牌替换）
+      // 制衡/仁德：多选切换；青囊/反间：单选（点新牌替换）
       const i = activeSel.value.indexOf(c.id);
-      if (activeMode.value === 'qingnang') activeSel.value = i >= 0 ? [] : [c.id];
+      if (activeMode.value === 'qingnang' || activeMode.value === 'fanjian') activeSel.value = i >= 0 ? [] : [c.id];
       else if (i >= 0) activeSel.value.splice(i, 1);
       else activeSel.value.push(c.id);
       return;
@@ -687,6 +706,12 @@ function onSeatClick(pid: number) {
     const t = view.value.players[pid]!;
     if (!t.alive || t.hp >= t.maxHp || activeSel.value.length !== 1) return;
     act({ type: 'useSkill', sub: 'qingnang', cardId: activeSel.value[0], targetIds: [pid] });
+    return;
+  }
+  if (activeMode.value === 'fanjian') {
+    const t = view.value.players[pid]!;
+    if (!t.alive || pid === humanId.value || activeSel.value.length !== 1) return;
+    act({ type: 'useSkill', sub: 'fanjian', cardId: activeSel.value[0], targetIds: [pid] });
     return;
   }
   if (lijianMode.value && lijianCard.value) {
@@ -782,6 +807,11 @@ function respondTao(use: boolean) {
 function respondTaoAlt() {
   const card = jijiuMaterial();
   act({ type: 'respondTao', cardId: card ? card.id : null });
+}
+
+/** 反间应答（周瑜的对手）：猜一种花色 */
+function respondFanjian(suit: Suit) {
+  act({ type: 'respondFanjian', suit });
 }
 
 /** 选牌（拆/顺）：pickTarget 为被选牌玩家，pickOpts 为可选项（ADR-0008） */
@@ -913,10 +943,14 @@ function evText(e: GameEvent): string {
       return `${n(e.player)} 的【${disp(e.sub)}】被弃置`;
     case 'gainCard':
       return `${n(e.player)} 获得了 ${n(e.from)} 的一张牌`;
-    case 'negate':
-      return e.targetId != null
-        ? `${n(e.player)} 用【无懈可击】抵消了【${disp(e.sub)}】对 ${n(e.targetId)} 的效果`
-        : `${n(e.player)} 用【无懈可击】抵消了【${disp(e.sub)}】`;
+    case 'negate': {
+      // 无懈链（M11）：奇数张 = 抵消生效中；偶数张（≥2）= 被反无懈，恢复生效
+      const what = e.targetId != null ? `【${disp(e.sub)}】对 ${n(e.targetId)} 的效果` : `【${disp(e.sub)}】`;
+      if ((e.chain ?? 1) === 1) return `${n(e.player)} 用【无懈可击】抵消了${what}`;
+      return (e.chain ?? 1) % 2 === 1
+        ? `${n(e.player)} 用【无懈可击】再度抵消了${what}`
+        : `${n(e.player)} 用【无懈可击】反制，${what}恢复`;
+    }
     case 'judge':
       return `${n(e.player)} 的【${REASON_NAMES[e.reason]}】判定 → ${e.card.suit}${e.card.rank}【${disp(e.card.sub)}】`;
     case 'judgeModify':
@@ -940,7 +974,7 @@ function evText(e: GameEvent): string {
 <template>
   <div class="app">
     <header>
-      <h1>三国杀单机 <span class="m1">M10</span></h1>
+      <h1>三国杀单机 <span class="m1">M11</span></h1>
       <div class="meta">
         <span class="seed">seed {{ seed }}</span>
         <span v-if="me" class="badge" :class="'id-' + me.identity">
@@ -1149,6 +1183,13 @@ function evText(e: GameEvent): string {
           >
             青囊（弃1牌 目标回1血）
           </button>
+          <button
+            v-if="mySkills.includes('fanjian') && !state.usedSkills.includes('fanjian') && (me?.hand.length ?? 0) >= 1"
+            class="btn"
+            @click="activeMode = 'fanjian'; activeSel = []"
+          >
+            反间（展示1牌 猜错花色受伤）
+          </button>
           <button class="btn" @click="act({ type: 'endPlay' })">结束出牌</button>
         </template>
       </template>
@@ -1196,9 +1237,19 @@ function evText(e: GameEvent): string {
         <button class="btn" @click="shaAgain(false)">不杀</button>
       </template>
       <template v-else-if="pend?.kind === 'respondWuxie'">
-        【{{ pend.trickSub ? disp(pend.trickSub) : '' }}】{{ pend.trickTargetId != null ? '对 ' + view.players[pend.trickTargetId]!.name + ' ' : '' }}结算 ——
-        <button class="btn" :disabled="!hasCardInHand('wuxie')" @click="respondWuxie(true)">用【无懈可击】抵消</button>
+        【{{ pend.trickSub ? disp(pend.trickSub) : '' }}】{{ pend.trickTargetId != null ? '对 ' + view.players[pend.trickTargetId]!.name + ' ' : '' }}结算
+        <span v-if="wuxieFrame && wuxieFrame.kind !== 'sha' && wuxieFrame.wuxieCount > 0" class="wuxie-chain">
+          （已被 {{ wuxieFrame.wuxieCount }} 张【无懈可击】{{ wuxieFrame.wuxieCount % 2 === 1 ? '抵消' : '反制恢复' }}）
+        </span>
+        ——
+        <button class="btn" :disabled="!hasCardInHand('wuxie')" @click="respondWuxie(true)">
+          {{ wuxieFrame && wuxieFrame.kind !== 'sha' && wuxieFrame.wuxieCount % 2 === 1 ? '用【无懈可击】反制（恢复生效）' : '用【无懈可击】抵消' }}
+        </button>
         <button class="btn" @click="respondWuxie(false)">不抵消</button>
+      </template>
+      <template v-else-if="pend?.kind === 'fanjian'">
+        【反间】—— {{ view.players[pend.fanjian!.sourceId]!.name }} 令你猜一种花色，猜错将受到 1 点伤害：
+        <button v-for="s in SUIT_LIST" :key="s" class="btn" @click="respondFanjian(s)">{{ s }}</button>
       </template>
       <template v-else-if="pend?.kind === 'respondTao'">
         {{ view.players[view.pending!.dyingId!]!.name }} 濒死 ——
@@ -1395,6 +1446,13 @@ h1 {
   font-size: 13px;
   color: #9aa3b2;
   margin-bottom: 12px;
+}
+
+/* 无懈链状态提示：抵消中 / 已恢复（M11） */
+.wuxie-chain {
+  margin: 0 4px;
+  color: #e0b050;
+  font-size: 12px;
 }
 .pid {
   font-size: 12px;

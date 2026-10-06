@@ -224,6 +224,13 @@ function validate(s: GameState, pend: Inquiry, a: Action): void {
           const t = a.targetIds?.[0] == null ? undefined : s.players[a.targetIds[0]];
           if (!t || !t.alive) throw new Error('【青囊】目标不合法');
           if (t.hp >= t.maxHp) throw new Error('【青囊】目标体力已满');
+        } else if (a.sub === 'fanjian') {
+          if (!hasSkill(actor, 'fanjian')) throw new Error('你没有该技能');
+          if (s.usedSkills.includes('fanjian')) throw new Error('【反间】每回合限一次');
+          const c = actor.hand.find(x => x.id === a.cardId);
+          if (!c) throw new Error('【反间】需要展示一张手牌');
+          const t = a.targetIds?.[0] == null ? undefined : s.players[a.targetIds[0]];
+          if (!t || !t.alive || t.id === actor.id) throw new Error('【反间】目标不合法');
         } else if (a.sub === 'lijian') {
           if (!hasSkill(actor, 'lijian')) throw new Error('你没有该技能');
           if (s.usedSkills.includes('lijian')) throw new Error('【离间】每回合限一次');
@@ -331,6 +338,9 @@ function validate(s: GameState, pend: Inquiry, a: Action): void {
         if (!pend.liuliTo?.includes(to.id)) throw new Error('【流离】目标不在可选范围');
       }
       break;
+    case 'fanjian':
+      if (a.type !== 'respondFanjian') throw new Error('应答类型不合法');
+      break;
   }
 }
 
@@ -376,18 +386,14 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       s.log.push({ t: 'playCard', player: actor.id, card: asSub, target: a.targetId });
       switch (asSub) {
         case 'wuzhong':
+          // 无中生有：走帧结算才有无懈询问（M11）；牌本体随出牌入弃牌堆（帧只记因果 cardId）
           s.discard.push(card);
-          drawCards(s, actor.id, 2);
-          s.log.push({ t: 'draw', player: actor.id, n: 2 });
+          s.frames.push(makeTrickFrame(s, actor.id, asSub, card));
           break;
         case 'taoyuan': {
+          // 桃园结义：对每名存活角色（含使用者，从使用者起按座次）结算，逐目标可无懈（M11）
           s.discard.push(card);
-          for (const p of s.players) {
-            if (p.alive && p.hp < p.maxHp) {
-              p.hp = Math.min(p.maxHp, p.hp + 1);
-              s.log.push({ t: 'heal', player: p.id, amount: 1 });
-            }
-          }
+          s.frames.push(makeTrickFrame(s, actor.id, asSub, card));
           break;
         }
         case 'lebusi': {
@@ -408,20 +414,7 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
           // 过河拆桥/顺手牵羊/决斗：单目标；南蛮/万箭：其余存活玩家按座次
           s.discard.push(card);
           const targets = a.targetId != null ? [a.targetId] : othersInOrder(s, actor.id);
-          s.frames.push({
-            kind: 'trick',
-            id: s.frameSeq++,
-            sub: asSub,
-            userId: actor.id,
-            cardId: card.id,
-            targets,
-            idx: 0,
-            stage: 'wuxie',
-            negated: false,
-            askedWuxieIds: [],
-            duelTurn: a.targetId ?? -1,
-            duelShaPlayed: 0,
-          });
+          s.frames.push(makeTrickFrame(s, actor.id, asSub, card, targets));
         }
       }
       break;
@@ -480,26 +473,18 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
         s.log.push({ t: 'skill', player: actor.id, sub: 'qingnang', detail: `${t.name} 回复1点体力` });
         t.hp += 1;
         s.log.push({ t: 'heal', player: t.id, amount: 1 });
+      } else if (a.sub === 'fanjian') {
+        // 反间：令目标猜一种花色；猜错则受 1 点伤害（展示的手牌无论如何都交给目标）
+        const t = s.players[a.targetIds![0]!]!;
+        s.log.push({ t: 'skill', player: actor.id, sub: 'fanjian', detail: `令 ${t.name} 猜一种花色` });
+        s.pending = { kind: 'fanjian', playerId: t.id, fanjian: { sourceId: actor.id, cardId: a.cardId! } };
       } else if (a.sub === 'lijian') {
         // 离间：弃一张手牌，视为第一名男性对第二名男性使用【决斗】
         // （被弃的手牌即决斗帧的因果牌，入弃牌堆；可被无懈可击抵消）
         const card = removeFromHand(actor, a.cardId!);
         s.discard.push(card);
         const [userId, targetId] = a.targetIds!;
-        s.frames.push({
-          kind: 'trick',
-          id: s.frameSeq++,
-          sub: 'juedou',
-          userId,
-          cardId: card.id,
-          targets: [targetId],
-          idx: 0,
-          stage: 'wuxie',
-          negated: false,
-          askedWuxieIds: [],
-          duelTurn: targetId, // 决斗目标先出杀
-          duelShaPlayed: 0,
-        });
+        s.frames.push(makeTrickFrame(s, userId, 'juedou', card, [targetId]));
       }
       break;
     }
@@ -596,17 +581,11 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       if (a.cardId != null) {
         s.discard.push(removeFromHand(actor, a.cardId));
         s.log.push({ t: 'respond', player: actor.id, card: 'wuxie', resp: 'wuxie' });
-        s.log.push({ t: 'negate', player: actor.id, sub: f.sub, targetId: trickTargetOf(f) });
-        if (f.kind === 'delayedJudge') {
-          // 延时锦囊被无懈：直接作废弃置，不判定
-          const owner = s.players[f.ownerId]!;
-          const idx = owner.judgements.findIndex(c => zoneSub(c) === f.sub);
-          if (idx >= 0) { const z = owner.judgements.splice(idx, 1)[0]!; delete z.asSub; s.discard.push(z); }
-          s.frames = s.frames.filter(fr => fr.id !== f.id);
-        } else {
-          f.negated = true;
-          advanceTarget(s, f);
-        }
+        // 无懈链（M11）：每张无懈翻转一次是否被抵消（wuxieCount 奇偶），
+        // 并重开一圈询问——因为"该不该反无懈"是一个新问题。链必然终止：无懈是有限手牌。
+        f.wuxieCount += 1;
+        s.log.push({ t: 'negate', player: actor.id, sub: f.sub, targetId: trickTargetOf(f), chain: f.wuxieCount });
+        f.askedWuxieIds = [actor.id];
       } else {
         s.log.push({ t: 'respond', player: actor.id, card: null, resp: 'wuxie' });
         f.askedWuxieIds = [...f.askedWuxieIds, actor.id];
@@ -769,6 +748,22 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       }
       break;
     }
+    case 'respondFanjian': {
+      // 反间：展示手牌交给目标；猜错花色则受 1 点伤害（周瑜造成）
+      s.pending = null;
+      const fj = pend.fanjian!;
+      const source = s.players[fj.sourceId]!;
+      const card = removeFromHand(source, fj.cardId);
+      actor.hand.push(card);
+      s.log.push({ t: 'skill', player: source.id, sub: 'fanjian', detail: `展示【${CARD_INFO[card.sub].display}】交给 ${actor.name}` });
+      s.log.push({ t: 'gainCard', player: actor.id, from: source.id });
+      if (a.suit === card.suit) {
+        s.log.push({ t: 'skill', player: source.id, sub: 'fanjian', detail: `${actor.name} 猜中花色，未受伤` });
+      } else {
+        dealDamage(s, actor.id, 1, source.id);
+      }
+      break;
+    }
   }
 }
 
@@ -776,6 +771,40 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
 
 function startSha(s: GameState, sourceId: number, cardId: number, targets: number[]): void {
   s.frames.push({ kind: 'sha', id: s.frameSeq++, userId: sourceId, cardId, targets, idx: 0, cixiongDone: [], liuliDone: [], tiejiTried: [], tiejiHit: [] });
+}
+
+/**
+ * 建一张锦囊结算帧（M11：无中生有/桃园结义也走帧，才有逐目标的无懈询问）。
+ * 无中 = 只对自己；桃园 = 从使用者起按座次的全部存活角色。
+ */
+function makeTrickFrame(s: GameState, userId: number, sub: CardSub, card: Card, targets?: number[]): TrickFrame {
+  const ts = targets ?? (sub === 'wuzhong' ? [userId] : aliveInOrder(s, userId));
+  return {
+    kind: 'trick',
+    id: s.frameSeq++,
+    sub,
+    userId,
+    cardId: card.id,
+    targets: ts,
+    idx: 0,
+    stage: 'wuxie',
+    wuxieCount: 0,
+    askedWuxieIds: [],
+    // 决斗：目标先出杀；其余锦囊不用此字段
+    duelTurn: sub === 'juedou' ? (ts[0] ?? -1) : -1,
+    duelShaPlayed: 0,
+  };
+}
+
+/** 从 userId 起按座次的全部存活角色（含自己；桃园结义的结算顺序） */
+function aliveInOrder(s: GameState, userId: number): number[] {
+  const n = s.players.length;
+  const out: number[] = [];
+  for (let k = 0; k < n; k++) {
+    const p = s.players[(userId + k) % n]!;
+    if (p.alive) out.push(p.id);
+  }
+  return out;
 }
 
 /** 杀帧推进到下一目标（当前目标已闪避/被贯石斧命中/弃牌取消/死亡） */
@@ -1105,7 +1134,7 @@ function stepFrame(s: GameState): void {
 
 function stepDelayed(s: GameState, f: DelayedFrame): void {
   const owner = s.players[f.ownerId]!;
-  const asker = nextWuxieAsker(s, f.ownerId, f.askedWuxieIds);
+  const asker = nextWuxieAsker(s, f);
   if (asker != null) {
     s.pending = {
       kind: 'respondWuxie',
@@ -1117,10 +1146,17 @@ function stepDelayed(s: GameState, f: DelayedFrame): void {
     };
     return;
   }
-  // 无懈阶段结束，弹帧；判定牌翻开后进入鬼才链（M4）
+  // 无懈阶段结束，弹帧
   s.frames.pop();
   const idx = owner.judgements.findIndex(c => zoneSub(c) === f.sub);
   if (!owner.alive || idx < 0) return; // 主人死亡时判定区已随死亡进入弃牌堆
+  if (f.wuxieCount % 2 === 1) {
+    // 奇数张无懈：该延时锦囊被抵消，直接作废弃置、不判定（M11 无懈链）
+    const z = owner.judgements.splice(idx, 1)[0]!;
+    delete z.asSub;
+    s.discard.push(z);
+    return;
+  }
   const zone = owner.judgements.splice(idx, 1)[0]!;
   const reason = f.sub as 'lebusi' | 'bingliang' | 'shandian';
   beginJudge(s, {
@@ -1141,7 +1177,7 @@ function stepTrick(s: GameState, f: TrickFrame): void {
     return;
   }
   if (f.stage === 'wuxie') {
-    const asker = nextWuxieAsker(s, f.userId, f.askedWuxieIds);
+    const asker = nextWuxieAsker(s, f);
     if (asker != null) {
       s.pending = {
         kind: 'respondWuxie',
@@ -1157,11 +1193,25 @@ function stepTrick(s: GameState, f: TrickFrame): void {
     return;
   }
   const target = s.players[f.targets[f.idx]]!;
-  if (f.negated || !target.alive) {
+  if (f.wuxieCount % 2 === 1 || !target.alive) {
     advanceTarget(s, f);
     return;
   }
   switch (f.sub) {
+    case 'wuzhong':
+      // 无中生有：对自己结算（无懈可击可抵消，M11 起走帧）
+      advanceTarget(s, f);
+      drawCards(s, target.id, 2);
+      s.log.push({ t: 'draw', player: target.id, n: 2 });
+      return;
+    case 'taoyuan':
+      // 桃园结义：逐目标回复 1 点（满血者无效果）
+      advanceTarget(s, f);
+      if (target.hp < target.maxHp) {
+        target.hp = Math.min(target.maxHp, target.hp + 1);
+        s.log.push({ t: 'heal', player: target.id, amount: 1 });
+      }
+      return;
     case 'nanman':
       if (hasShaMaterial(target)) {
         s.pending = { kind: 'respondSha', playerId: target.id, frameId: f.id, trickSub: f.sub, trickTargetId: target.id };
@@ -1211,21 +1261,28 @@ function stepTrick(s: GameState, f: TrickFrame): void {
   }
 }
 
-/** 目标结算完毕，推进到下一个目标（重置无懈与决斗状态） */
+/** 目标结算完毕，推进到下一个目标（重置无懈链与决斗状态） */
 function advanceTarget(s: GameState, f: TrickFrame): void {
   f.idx += 1;
-  f.negated = false;
+  f.wuxieCount = 0;
   f.askedWuxieIds = [];
   f.stage = 'wuxie';
   f.duelTurn = f.targets[0] ?? -1;
   f.duelShaPlayed = 0;
 }
 
-function nextWuxieAsker(s: GameState, userId: number, askedWuxieIds: number[]): number | null {
+/**
+ * 找下一位可打无懈的人：从帧的"锚点"（锦囊使用者 / 延时锦囊的判定区主人）的下家
+ * 按座次扫一整圈，锚点最后被问到——所以使用者本人也有机会反无懈救回自己的锦囊。
+ * askedWuxieIds 每有一张无懈打出就被重置为仅含出牌者，链因此可以反复重开；
+ * 终止性由"无懈是有限手牌 + 每人一圈内只被问一次"共同保证。
+ */
+function nextWuxieAsker(s: GameState, f: TrickFrame | DelayedFrame): number | null {
   const n = s.players.length;
+  const anchor = f.kind === 'trick' ? f.userId : f.ownerId;
   for (let k = 1; k <= n; k++) {
-    const p = s.players[(userId + k) % n]!;
-    if (p.alive && !askedWuxieIds.includes(p.id) && p.hand.some(c => c.sub === 'wuxie'))
+    const p = s.players[(anchor + k) % n]!;
+    if (p.alive && !f.askedWuxieIds.includes(p.id) && p.hand.some(c => c.sub === 'wuxie'))
       return p.id;
   }
   return null;
@@ -1350,13 +1407,17 @@ export function advance(s: GameState): void {
         id: s.frameSeq++,
         sub: zsub,
         ownerId: cur.id,
+        wuxieCount: 0,
         askedWuxieIds: [],
       });
       continue;
     }
     if (s.phase === 'draw') {
-      drawCards(s, cur.id, 2);
-      s.log.push({ t: 'draw', player: cur.id, n: 2 });
+      // 英姿（周瑜·锁定）：摸牌阶段多摸一张
+      const n = hasSkill(cur, 'yingzi') ? 3 : 2;
+      if (n === 3) s.log.push({ t: 'skill', player: cur.id, sub: 'yingzi' });
+      drawCards(s, cur.id, n);
+      s.log.push({ t: 'draw', player: cur.id, n });
       s.phase = 'play';
       continue;
     }

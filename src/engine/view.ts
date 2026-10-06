@@ -39,6 +39,11 @@ export interface View {
 
 export function viewOf(s: GameState, viewerId: number | null): View {
   const viewer = viewerId == null ? undefined : s.players[viewerId];
+  // 反间（M11）：待猜的手牌绝不能被看见——cardId 在 view 里一律置 -1（引擎自持原值）
+  const pend =
+    s.pending && s.pending.kind === 'fanjian' && s.pending.fanjian
+      ? { ...s.pending, fanjian: { sourceId: s.pending.fanjian.sourceId, cardId: -1 } }
+      : s.pending;
   return {
     players: s.players.map(p => ({
       id: p.id,
@@ -69,7 +74,7 @@ export function viewOf(s: GameState, viewerId: number | null): View {
     playedSha: s.playedSha,
     skipDraw: s.skipDraw,
     skipPlay: s.skipPlay,
-    pending: s.pending,
+    pending: pend,
     log: s.log,
     winner: s.winner,
     me:

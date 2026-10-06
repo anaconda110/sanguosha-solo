@@ -2,7 +2,6 @@ import { buildDeck, TOTAL_CARDS } from './cards';
 import { shuffleInPlace } from './rng';
 import { advance } from './step';
 import type { GameState, GeneralSub, Identity } from './types';
-
 // M10 武将池：19 名武将随机洗牌分给 5 个座次（白板不再入池）。技能见 skills.ts / ADR-0010~0016。
 const GENERAL_POOL: Array<{ name: string; general: GeneralSub }> = [
   { name: '关羽', general: 'guanyu' },
@@ -25,6 +24,15 @@ const GENERAL_POOL: Array<{ name: string; general: GeneralSub }> = [
   { name: '刘备', general: 'liubei' },
   { name: '华佗', general: 'huatuo' },
 ];
+
+// 体力：3 血武将表（标准版谋士/女性多为 3 血），主公位 +1（M11 清偿）
+const HP3: ReadonlySet<GeneralSub> = new Set<GeneralSub>([
+  'simayi', 'zhenji', 'zhugeliang', 'zhouyu', 'dajiao', 'sunshangxiang', 'diaochan', 'huatuo',
+]);
+
+export function hpOf(general: GeneralSub, seatId: number): number {
+  return (HP3.has(general) ? 3 : 4) + (seatId === 0 ? 1 : 0);
+}
 
 export function setup(seed: number): GameState {
   if (TOTAL_CARDS < 40) throw new Error('牌堆异常');
@@ -60,8 +68,8 @@ export function setup(seed: number): GameState {
     id,
     name,
     general,
-    maxHp: id === 0 ? 5 : 4,
-    hp: id === 0 ? 5 : 4,
+    maxHp: hpOf(general, id),
+    hp: hpOf(general, id),
     hand: [],
     equipment: {},
     judgements: [],

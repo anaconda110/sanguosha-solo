@@ -1,7 +1,7 @@
-// A1→M5 规则型 AI：优先级表驱动（ADR-0003/0005/0010/0011）。
+// A1→M11 规则型 AI：优先级表驱动（ADR-0003/0005/0010/0011/0017）。
 // 只使用公开信息（座次/血量/装备/判定区/手牌数/距离）与自己的手牌身份，不作读牌。
-// 已知局限（记录在案）：不使用无懈可击、不用闪电、鬼才只优化自己的判定、
-// 丈八蛇矛仅在无普通杀素材且手牌≥3 时动用、方天画戟不用在丈八两牌上。
+// 已知局限（记录在案）：不用闪电、鬼才只优化自己的判定、不做身份推断（allies 表只认
+// 明置信息，反贼/忠臣互相认不出）、丈八蛇矛仅在无普通杀素材且手牌≥3 时动用。
 import { canPlayShaNow, hasAnyCard, inShaRange, seatDistance } from '../engine/step';
 import { canActAsSha, canActAsShan, hasSkill, isBlackCard, isKongcheng, isRedCard } from '../engine/skills';
 import { CARD_INFO, GENERAL_SEX } from '../engine/types';
@@ -187,6 +187,13 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
           };
         }
       }
+      // 8.6 反间（周瑜）：展示最不值钱的牌给敌人猜花色，猜错即伤 1 点
+      if (hasSkill(me, 'fanjian') && !s.usedSkills.includes('fanjian') && hand.length >= 1) {
+        const t = enemies.find(id => s.players[id]!.alive);
+        if (t != null) {
+          return { type: 'useSkill', sub: 'fanjian', cardId: cheapest(hand, 1)[0]!.id, targetIds: [t] };
+        }
+      }
       // 9. 群体锦囊（闪电不用——ADR-0005）
       const nm = first('nanman');
       if (nm) return { type: 'playTrick', cardId: nm.id };
@@ -247,17 +254,29 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
       return { type: 'pickCard', from: 'hand' };
     }
     case 'respondWuxie': {
-      // M6 接上：自保 + 忠内保主公。不无懈自己使用的锦囊，不参与无懈对无懈。
+      // 无懈链（M11）：先判"我是否希望这张锦囊生效"（三态：希望/反对/不关心），
+      // 再与当前奇偶（是否已被抵消）比对——只有立场与现状相悖时才出牌。
+      // 这使"反无懈救自己的锦囊/救主公"自然成立；队友的锦囊仍不掺和（记录在案）。
       const f = s.frames.find(fr => fr.id === pend.frameId);
-      if (!f || f.kind !== 'trick') return { type: 'respondWuxie', cardId: null };
-      if (f.userId === me.id) return { type: 'respondWuxie', cardId: null };
-      const targetId = pend.trickTargetId;
-      if (targetId == null) return { type: 'respondWuxie', cardId: null };
-      const self = targetId === me.id;
+      if (!f || f.kind === 'sha') return { type: 'respondWuxie', cardId: null };
       const zhu = v.players.find(p => p.isZhu && p.alive);
-      const protectZhu =
-        (v.me.identity === 'zhong' || v.me.identity === 'nei') && targetId === zhu?.id;
-      if (!self && !protectZhu) return { type: 'respondWuxie', cardId: null };
+      const myIdentity = v.me.identity;
+      const iProtect = (id: number) =>
+        id === me.id || ((myIdentity === 'zhong' || myIdentity === 'nei') && id === zhu?.id);
+      const isDelayed = f.kind === 'delayedJudge';
+      const targetId = isDelayed ? f.ownerId : f.targets[f.idx];
+      let stance: boolean | null = null; // true=希望生效，false=希望被抵消，null=不关心
+      if (isDelayed) {
+        stance = iProtect(f.ownerId) ? false : null;
+      } else if (f.userId === me.id) {
+        stance = true; // 自己打出的锦囊，别人反无懈时我要救
+      } else if (f.sub === 'wuzhong' || f.sub === 'taoyuan') {
+        stance = iProtect(targetId!) ? true : null;
+      } else {
+        stance = iProtect(targetId!) ? false : null;
+      }
+      if (stance == null) return { type: 'respondWuxie', cardId: null };
+      if (stance === (f.wuxieCount % 2 === 0)) return { type: 'respondWuxie', cardId: null };
       const wx = first('wuxie');
       return { type: 'respondWuxie', cardId: wx ? wx.id : null };
     }
@@ -314,6 +333,10 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
           ? hand.find(c => c.sub !== 'tao' && c.sub !== 'shan' && isRedCard(c))
           : undefined);
       return { type: 'respondTao', cardId: tao ? tao.id : null };
+    }
+    case 'fanjian': {
+      // 反间应答：猜花色。无信息可用时按牌堆构成猜【♥】（桃/杀/闪红牌最多）
+      return { type: 'respondFanjian', suit: '♥' };
     }
     case 'discard': {
       // 保留价值：桃 > 闪 > 杀 > 锦囊/装备，弃最不值钱的

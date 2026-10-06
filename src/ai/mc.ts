@@ -56,7 +56,7 @@ const FULL_MULTISEC: Identity[] = ['zhu', 'zhong', 'fan', 'fan', 'nei'];
  * 约束均匀指派（死者已亮扣除）。读取他人手牌仅用于池化——采样结果与真实
  * 手牌内容统计独立，不构成读牌。
  */
-function determinize(s: GameState, viewerId: number, rng: () => number): GameState {
+export function determinize(s: GameState, viewerId: number, rng: () => number): GameState {
   const d = cloneState(s);
   d.log = s.log; // 仿真不读日志；共享只读引用让 step() 的拼接链保持正确
   d.actionLog = s.actionLog;
@@ -83,6 +83,11 @@ function determinize(s: GameState, viewerId: number, rng: () => number): GameSta
   d.deck = pool.slice(k);
 
   const taken: Identity[] = ['zhu'];
+  // 自己（viewerId）：身份已知，必须先从采样池中扣除，否则会派生出规则上
+  // 不可能的阵容（M11 修：原先只扣了明置主公，反贼视角 100% 出错）
+  const viewer = d.players[viewerId]!;
+  if (!viewer.alive) taken.push(viewer.identity);
+  else if (viewer.identity !== 'zhu') taken.push(viewer.identity);
   const hidden: PlayerState[] = [];
   for (const p of d.players) {
     if (p.id === viewerId || p.identity === 'zhu') continue; // 自己/主公保持真实

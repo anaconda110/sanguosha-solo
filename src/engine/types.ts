@@ -88,7 +88,8 @@ export type SkillSub =
   | 'ganglie'
   | 'zhiheng'
   | 'rende'
-  | 'qingnang' | 'jijiu';
+  | 'qingnang' | 'jijiu'
+  | 'yingzi' | 'fanjian';
 
 export interface SkillInfo {
   display: string;
@@ -122,6 +123,8 @@ export const SKILL_INFO: Record<SkillSub, SkillInfo> = {
   rende: { display: '仁德', kind: 'active', desc: '出牌阶段限一次，你可以将任意张手牌交给一名其他角色，若给出的牌数不少于两张，你回复1点体力' },
   qingnang: { display: '青囊', kind: 'active', desc: '出牌阶段限一次，你可以弃置一张手牌并选择一名已受伤的角色，其回复1点体力' },
   jijiu: { display: '急救', kind: 'use', desc: '你的回合外，你可以将一张红色牌当【桃】使用' },
+  yingzi: { display: '英姿', kind: 'lock', desc: '锁定技，摸牌阶段，你多摸一张牌' },
+  fanjian: { display: '反间', kind: 'active', desc: '出牌阶段限一次，你可以令一名其他角色选择一种花色，然后你展示一张手牌并交给其；若其选择的花色与你展示的牌不同，其受到你造成的1点伤害' },
 };
 
 /** 性别（雌雄双股剑 / 离间依赖） */
@@ -141,9 +144,9 @@ export const GENERAL_SKILLS: Record<GeneralSub, SkillSub[]> = {
   zhangfei: ['paoxiao'],
   zhaoyun: ['longdan'],
   caocao: ['jianxiong'],
-  simayi: ['guicai'],
+  simayi: ['guicai', 'fankui'],
   huanggai: ['kurou'],
-  zhouyu: ['fankui'],
+  zhouyu: ['yingzi', 'fanjian'],
   lvbu: ['wushuang'],
   sunshangxiang: ['xiaoji'],
   diaochan: ['lijian', 'biyue'],
@@ -206,7 +209,8 @@ export interface TrickFrame {
   idx: number;
   /** 当前目标：先无懈询问（wuxie）再结算效果（effect）；拆/顺在效果前有选牌（pick）阶段 */
   stage: 'wuxie' | 'effect' | 'pick';
-  negated: boolean;
+  /** 本目标已打出的无懈张数：奇数=被抵消（M11 无懈链，替代原 negated 布尔） */
+  wuxieCount: number;
   askedWuxieIds: number[];
   /** 决斗专用：当前轮到谁出杀 */
   duelTurn: number;
@@ -221,6 +225,8 @@ export interface DelayedFrame {
   sub: CardSub;
   /** 判定区主人 */
   ownerId: number;
+  /** 无懈链：已打出的无懈张数，奇数=该延时锦囊不判定直接弃置（M11） */
+  wuxieCount: number;
   askedWuxieIds: number[];
 }
 
@@ -282,7 +288,7 @@ export interface PendingTrigger {
  */
 export interface Inquiry {
   playerId: number;
-  kind: 'play' | 'respondShan' | 'respondSha' | 'respondWuxie' | 'respondTao' | 'shaAgain' | 'pickCard' | 'trigger' | 'skillCard' | 'discard' | 'cixiong' | 'guanshi' | 'guanxing' | 'liuli';
+  kind: 'play' | 'respondShan' | 'respondSha' | 'respondWuxie' | 'respondTao' | 'shaAgain' | 'pickCard' | 'trigger' | 'skillCard' | 'discard' | 'cixiong' | 'guanshi' | 'guanxing' | 'liuli' | 'fanjian';
   /** respondShan/respondTao：杀的来源（结算奖惩用） */
   shaSourceId?: number;
   /** respondTao：濒死的玩家 */
@@ -325,6 +331,8 @@ export interface Inquiry {
   liuliTo?: number[];
   /** liuli：杀的来源（禁止转移给他） */
   liuliSourceId?: number;
+  /** fanjian：反间的发起者与待展示的手牌（M11） */
+  fanjian?: { sourceId: number; cardId: number };
 }
 
 export type WinSide = 'zhu' | 'fan' | 'nei' | 'draw';
@@ -344,7 +352,7 @@ export type GameEvent =
   | { t: 'equip'; player: number; sub: CardSub }
   | { t: 'unequip'; player: number; sub: CardSub }
   | { t: 'gainCard'; player: number; from: number }
-  | { t: 'negate'; player: number; sub: CardSub; targetId?: number }
+  | { t: 'negate'; player: number; sub: CardSub; targetId?: number; /** 无懈链中的第几张（奇数=抵消，偶数=反无懈令其恢复） */ chain?: number }
   | { t: 'judge'; player: number; card: Card; reason: 'lebusi' | 'bingliang' | 'shandian' | 'bagua' | 'luoshen' | 'tieji' | 'ganglie' }
   | { t: 'judgeModify'; player: number; sub: SkillSub; card: Card }
   | { t: 'moveJudgement'; sub: CardSub; from: number; to: number }
@@ -357,7 +365,8 @@ export type Action =
   | { type: 'playTao'; cardId: number }
   | { type: 'playTrick'; cardId: number; targetId?: number }
   | { type: 'playEquip'; cardId: number }
-  | { type: 'useSkill'; sub: SkillSub; /** 离间：弃置的手牌；青囊：弃置的手牌 */ cardId?: number; /** 离间：两名男性（前者为决斗使用者）；仁德/青囊：目标 */ targetIds?: number[]; /** 制衡/仁德：多张手牌 */ cardIds?: number[] }
+  | { type: 'useSkill'; sub: SkillSub; /** 离间/青囊/反间：弃置（或展示）的手牌 */ cardId?: number; /** 离间：两名男性（前者为决斗使用者）；仁德/青囊/反间：目标 */ targetIds?: number[]; /** 制衡/仁德：多张手牌 */ cardIds?: number[] }
+  | { type: 'respondFanjian'; /** 反间：猜测的花色 */ suit: Suit }
   | { type: 'endPlay' }
   | { type: 'respondShan'; cardId: number | null }
   | { type: 'respondSha'; cardId: number | null }
