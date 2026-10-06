@@ -26,20 +26,23 @@ npm run regression # 逐技回归护栏（25 技能覆盖率 + 无懈链 + 构�
 - **无懈链**（ADR-0017）：无懈可被反无懈，奇数张抵消、偶数张恢复；无中生有与
   桃园结义也逐目标询问无懈。
 - **AI**（`src/ai/`）：规则型优先级表 AI；首考出牌决策走 PIMC 蒙特卡洛（Web Worker
-  中仿真，15s 看门狗兜底）。
+  中仿真，15s 看门狗兜底）；**身份推断**（ADR-0018）从公开日志的行为打分推出
+  敌/友/未知三态，用于目标排序与救援取舍（不读牌、纯函数、可复现）。
 - **界面**（`src/App.vue`）：环形桌位、卡牌角标、指向箭头、判定/伤害动画、观星
   选牌、武将图鉴、战绩统计面板（批量 AI 自战胜率）。
 
 ## 文档
 
 - [CONTEXT.md](CONTEXT.md) — 领域术语表（结算栈/时序点/确定性化/选牌……）
-- [docs/adr/](docs/adr/) — 17 篇架构决策记录（ADR-0001~0017），每篇含"已知简化"
+- [docs/adr/](docs/adr/) — 18 篇架构决策记录（ADR-0001~0018），每篇含"已知简化"
 
 ## 测试
 
 - `npm run smoke` — 多局 AI 自战：正常终局、卡牌守恒、同 seed 完全可复现
 - `npm run regression` — 逐技回归：25 技能覆盖率、无懈链奇偶、构造局面（反间窥牌隔离等）
 - `scripts/probe-m4.ts` — 技能/装备激活次数探针（`npx tsx scripts/probe-m4.ts 60`）
+- `scripts/probe-belief.ts` — 身份推断准确率（命中/误判/弃权三档）
+- `scripts/probe-friendly.ts` — 同阵营互伤统计（身份推断的效果观测）
 - `scripts/smoke-mc.ts` — MC AI 确定性校验
 - `scripts/debug-one.ts` — 单局全日志调试
 

@@ -974,7 +974,7 @@ function evText(e: GameEvent): string {
 <template>
   <div class="app">
     <header>
-      <h1>三国杀单机 <span class="m1">M11</span></h1>
+      <h1>三国杀单机 <span class="m1">M12</span></h1>
       <div class="meta">
         <span class="seed">seed {{ seed }}</span>
         <span v-if="me" class="badge" :class="'id-' + me.identity">

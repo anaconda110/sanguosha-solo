@@ -6,17 +6,11 @@ import { canActAsSha, hasSkill, isKongcheng } from '../engine/skills';
 import { CARD_INFO } from '../engine/types';
 import type { Action, Card, GameState, Identity, PlayerState } from '../engine/types';
 import { ruleAction } from './rule';
+import { SIDE_OF } from './belief';
 
 const ROLLOUTS = 4; // 每候选 rollout 次数（预算实测调定：决策 ≈ 1s）
 const ROLLOUT_CAP = 150; // rollout 步数上限，超出按部分局面评估
 const MAX_CANDIDATES = 4; // 候选上限（含结束出牌）；ADR-0006 上限 6 的收紧实现
-
-const SIDE_OF: Record<Identity, 'zhu' | 'fan' | 'nei'> = {
-  zhu: 'zhu',
-  zhong: 'zhu',
-  fan: 'fan',
-  nei: 'nei',
-};
 
 /** AI 统一入口：仅回合首个出牌决策走 MC（ADR-0006 第 1 条），其余沿用规则策略 */
 export function aiAction(s: GameState, playerId: number): Action | null {
