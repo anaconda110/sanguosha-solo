@@ -844,6 +844,28 @@ function respondFanjian(suit: Suit) {
   act({ type: 'respondFanjian', suit });
 }
 
+/** 主公技代打（护驾/激将，M14）：盟友应答——出闪/出杀，或不应 */
+function respondAid(use: boolean) {
+  const p = pend.value;
+  if (!p || p.lordPend?.aidForId == null) return;
+  if (!use) {
+    if (p.sub === 'hujia') act({ type: 'respondShan', cardId: null });
+    else act({ type: 'respondSha', cardId: null });
+    return;
+  }
+  const hand = me.value?.hand ?? [];
+  if (p.sub === 'hujia') {
+    const card =
+      hand.find(c => c.sub === 'shan') ??
+      (myGeneral.value === 'zhaoyun' ? hand.find(c => c.sub === 'sha') : undefined) ??
+      (myGeneral.value === 'zhenji' ? hand.find(c => !isRedCard(c)) : undefined);
+    act({ type: 'respondShan', cardId: card ? card.id : null });
+  } else {
+    const card = hand.find(c => c.sub === 'sha') ?? altShaMaterial();
+    act({ type: 'respondSha', cardId: card ? card.id : null });
+  }
+}
+
 /** 选牌（拆/顺）：pickTarget 为被选牌玩家，pickOpts 为可选项（ADR-0008） */
 const pickTarget = computed(() => {
   const p = pend.value;
@@ -1006,7 +1028,7 @@ function evText(e: GameEvent): string {
 <template>
   <div class="app">
     <header>
-      <h1>三国杀单机 <span class="m1">M13</span></h1>
+      <h1>三国杀单机 <span class="m1">M14</span></h1>
       <div class="meta">
         <span class="seed">seed {{ seed }}</span>
         <span v-if="me" class="badge" :class="'id-' + me.identity">
@@ -1302,6 +1324,27 @@ function evText(e: GameEvent): string {
           使用【杀】
         </button>
         <button class="btn" @click="act({ type: 'respondJiedao', cardId: null })">交出武器</button>
+      </template>
+      <template v-else-if="pend?.kind === 'lordSkill'">
+        <template v-if="pend.lordPend?.aidForId != null">
+          【{{ SKILL_INFO[pend.sub!].display }}】—— {{ view.players[pend.lordPend.aidForId]!.name }} 请求你
+          {{ pend.sub === 'hujia' ? '打出一张【闪】' : '打出一张【杀】' }}
+          （效果归于他）：
+          <button
+            class="btn"
+            :disabled="pend.sub === 'hujia' ? !shanRespondable : !hasCardInHand('sha')"
+            @click="respondAid(true)"
+          >
+            {{ pend.sub === 'hujia' ? shanButtonLabel : '打出【杀】' }}
+          </button>
+          <button class="btn" @click="respondAid(false)">不应</button>
+        </template>
+        <template v-else>
+          【{{ SKILL_INFO[pend.sub!].display }}】—— 需要
+          {{ pend.sub === 'hujia' ? '一张【闪】' : '一张【杀】' }}，可向同势力盟友求援：
+          <button class="btn" @click="act({ type: 'respondLord', use: true })">求援</button>
+          <button class="btn" @click="act({ type: 'respondLord', use: false })">自己处理</button>
+        </template>
       </template>
       <template v-else-if="pend?.kind === 'respondTao'">
         {{ view.players[view.pending!.dyingId!]!.name }} 濒死 ——

@@ -92,11 +92,12 @@ export type SkillSub =
   | 'zhiheng'
   | 'rende'
   | 'qingnang' | 'jijiu'
-  | 'yingzi' | 'fanjian';
+  | 'yingzi' | 'fanjian'
+  | 'hujia' | 'jijiang' | 'jiuyuan';
 
 export interface SkillInfo {
   display: string;
-  kind: 'use' | 'trigger' | 'active' | 'lock';
+  kind: 'use' | 'trigger' | 'active' | 'lock' | 'lord';
   desc: string;
 }
 
@@ -128,6 +129,9 @@ export const SKILL_INFO: Record<SkillSub, SkillInfo> = {
   jijiu: { display: '急救', kind: 'use', desc: '你的回合外，你可以将一张红色牌当【桃】使用' },
   yingzi: { display: '英姿', kind: 'lock', desc: '锁定技，摸牌阶段，你多摸一张牌' },
   fanjian: { display: '反间', kind: 'active', desc: '出牌阶段限一次，你可以令一名其他角色选择一种花色，然后你展示一张手牌并交给其；若其选择的花色与你展示的牌不同，其受到你造成的1点伤害' },
+  hujia: { display: '护驾', kind: 'lord', desc: '主公技，当你需要使用或打出一张【闪】时，你可以令一名其他魏势力角色打出一张【闪】（视为由你打出）' },
+  jijiang: { display: '激将', kind: 'lord', desc: '主公技，当你需要使用或打出一张【杀】时，你可以令一名其他蜀势力角色打出一张【杀】（视为由你打出）' },
+  jiuyuan: { display: '救援', kind: 'lord', desc: '主公技，其他吴势力角色对你使用【桃】时，你额外回复1点体力' },
 };
 
 /** 性别（雌雄双股剑 / 离间依赖） */
@@ -141,12 +145,23 @@ export const GENERAL_SEX: Record<GeneralSub, Sex> = {
   machao: 'm', sunquan: 'm', xiahoudun: 'm', liubei: 'm', huatuo: 'm',
 };
 
+/** 势力（主公技依赖）：魏/蜀/吴/群 */
+export type Faction = 'wei' | 'shu' | 'wu' | 'qun';
+export const FACTION_NAMES: Record<Faction, string> = { wei: '魏', shu: '蜀', wu: '吴', qun: '群' };
+export const GENERAL_FACTION: Record<GeneralSub, Faction> = {
+  baiban: 'qun',
+  caocao: 'wei', simayi: 'wei', xiahoudun: 'wei',
+  liubei: 'shu', guanyu: 'shu', zhangfei: 'shu', zhaoyun: 'shu', zhugeliang: 'shu', machao: 'shu',
+  sunquan: 'wu', zhouyu: 'wu', huanggai: 'wu', sunshangxiang: 'wu', dajiao: 'wu', ganning: 'wu',
+  diaochan: 'qun', lvbu: 'qun', zhenji: 'qun', huatuo: 'qun',
+};
+
 export const GENERAL_SKILLS: Record<GeneralSub, SkillSub[]> = {
   baiban: [],
   guanyu: ['wusheng'],
   zhangfei: ['paoxiao'],
   zhaoyun: ['longdan'],
-  caocao: ['jianxiong'],
+  caocao: ['jianxiong', 'hujia'],
   simayi: ['guicai', 'fankui'],
   huanggai: ['kurou'],
   zhouyu: ['yingzi', 'fanjian'],
@@ -158,9 +173,9 @@ export const GENERAL_SKILLS: Record<GeneralSub, SkillSub[]> = {
   dajiao: ['guose', 'liuli'],
   ganning: ['qixi'],
   machao: ['mashu', 'tieji'],
-  sunquan: ['zhiheng'],
+  sunquan: ['zhiheng', 'jiuyuan'],
   xiahoudun: ['ganglie'],
-  liubei: ['rende'],
+  liubei: ['rende', 'jijiang'],
   huatuo: ['qingnang', 'jijiu'],
 };
 
@@ -295,7 +310,7 @@ export interface PendingTrigger {
  */
 export interface Inquiry {
   playerId: number;
-  kind: 'play' | 'respondShan' | 'respondSha' | 'respondWuxie' | 'respondTao' | 'shaAgain' | 'pickCard' | 'trigger' | 'skillCard' | 'discard' | 'cixiong' | 'guanshi' | 'guanxing' | 'liuli' | 'fanjian' | 'wuguPick' | 'jiedao';
+  kind: 'play' | 'respondShan' | 'respondSha' | 'respondWuxie' | 'respondTao' | 'shaAgain' | 'pickCard' | 'trigger' | 'skillCard' | 'discard' | 'cixiong' | 'guanshi' | 'guanxing' | 'liuli' | 'fanjian' | 'wuguPick' | 'jiedao' | 'lordSkill';
   /** respondShan/respondTao：杀的来源（结算奖惩用） */
   shaSourceId?: number;
   /** respondTao：濒死的玩家 */
@@ -344,6 +359,13 @@ export interface Inquiry {
   wuguCards?: Card[];
   /** jiedao：借刀——被要求出杀者、杀的目标、借刀人（拒出杀则武器归属借刀人） */
   jiedao?: { user: number; victim: number; weaponSub: CardSub };
+  /** lordSkill（M14 护驾/激将）：主公求援时的三段式状态 */
+  lordPend?: Inquiry;
+  /** lordSkill：尚未询问的盟友；respondShan/Sha 上表示"还剩这些盟友可代劳" */
+  aidIds?: number[];
+  /** respondShan/respondSha：应答者是代主公出牌（aidForId = 主公 id）——
+   *  牌从应答者手中出，效果归于主公（M14 护驾/激将） */
+  aidForId?: number;
 }
 
 export type WinSide = 'zhu' | 'fan' | 'nei' | 'draw';
@@ -352,7 +374,7 @@ export type GameEvent =
   | { t: 'turnStart'; player: number }
   | { t: 'draw'; player: number; n: number }
   | { t: 'playCard'; player: number; card: CardSub; target?: number; /** 方天画戟：多目标 */ targets?: number[] }
-  | { t: 'respond'; player: number; card: CardSub | null; resp: 'shan' | 'sha' | 'tao' | 'wuxie' }
+  | { t: 'respond'; player: number; card: CardSub | null; resp: 'shan' | 'sha' | 'tao' | 'wuxie'; /** 代主公打出时记主公 id（护驾/激将） */ aid?: number }
   | { t: 'damage'; player: number; amount: number; source?: number; loss?: boolean }
   | { t: 'heal'; player: number; amount: number }
   | { t: 'dying'; player: number }
@@ -381,6 +403,7 @@ export type Action =
   | { type: 'respondFanjian'; /** 反间：猜测的花色 */ suit: Suit }
   | { type: 'respondWugu'; /** 五谷丰登：领取的牌 */ cardId: number }
   | { type: 'respondJiedao'; /** 借刀杀人：打出的杀（null = 交出武器） */ cardId: number | null }
+  | { type: 'respondLord'; /** 主公技（护驾/激将）：是否向同势力盟友求助 */ use: boolean }
   | { type: 'endPlay' }
   | { type: 'respondShan'; cardId: number | null }
   | { type: 'respondSha'; cardId: number | null }

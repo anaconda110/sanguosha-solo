@@ -307,12 +307,28 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
       return { type: 'endPlay' };
     }
     case 'respondShan': {
+      // 代主公出闪（护驾，M14）：先判这位主公值不值得救——推断为敌则不出
+      if (pend.aidForId != null) {
+        const lordId = pend.aidForId;
+        const foe = inferLordFavor(s)[lordId] ?? 0;
+        if (v.me.identity === 'fan' || foe >= THRESHOLD)
+          return { type: 'respondShan', cardId: null };
+        const sh = shanMaterial(me, hand);
+        return { type: 'respondShan', cardId: sh ? sh.id : null };
+      }
       // 八卦阵优先判定（每条询问仅一次；青釭剑无视）
       if (me.equipment.shield && !pend.baguaTried && !pend.qinggang) return { type: 'respondBagua' };
       const sh = shanMaterial(me, hand);
       return { type: 'respondShan', cardId: sh ? sh.id : null };
     }
     case 'respondSha': {
+      // 代主公出杀（激将，M14）：同上，先判值不值得帮
+      if (pend.aidForId != null) {
+        const lordId = pend.aidForId;
+        const foe = inferLordFavor(s)[lordId] ?? 0;
+        if (v.me.identity === 'fan' || foe >= THRESHOLD)
+          return { type: 'respondSha', cardId: null };
+      }
       const sm = shaMaterial(me, hand);
       return { type: 'respondSha', cardId: sm ? sm.id : null };
     }
@@ -410,6 +426,9 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
           : undefined);
       return { type: 'respondTao', cardId: tao ? tao.id : null };
     }
+    case 'lordSkill':
+      // 主公技求援（护驾/激将）：白送的盟友资源，一律同意
+      return { type: 'respondLord', use: true };
     case 'fanjian': {
       // 反间应答：猜花色。无信息可用时按牌堆构成猜【♥】（桃/杀/闪红牌最多）
       return { type: 'respondFanjian', suit: '♥' };

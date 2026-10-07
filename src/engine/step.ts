@@ -3,7 +3,7 @@
 // 推进到需要玩家决策时以 pending 停下。濒死求桃是全局打断，不触碰帧。
 import { randU32, shuffleInPlace } from './rng';
 import { TOTAL_CARDS } from './cards';
-import { CARD_INFO, GENERAL_SEX } from './types';
+import { CARD_INFO, GENERAL_FACTION, GENERAL_SEX } from './types';
 import {
   asTrickSub,
   canActAsSha as skillCanActAsSha,
@@ -262,10 +262,11 @@ function validate(s: GameState, pend: Inquiry, a: Action): void {
         throw new Error('出牌阶段的动作不合法');
       }
       break;
-    case 'respondShan':
+    case 'respondShan': {
       if (a.type === 'respondBagua') {
         if (!actor.equipment.shield) throw new Error('未装备【八卦阵】');
         if (pend.qinggang) throw new Error('【青釭剑】无视八卦阵');
+        if (pend.aidForId != null) throw new Error('【护驾】需打出【闪】，不能代判定八卦阵');
         break;
       }
       if (a.type !== 'respondShan') throw new Error('应答类型不合法');
@@ -274,6 +275,7 @@ function validate(s: GameState, pend: Inquiry, a: Action): void {
         if (!c || !canActAsShan(actor, c)) throw new Error('这张牌不能当【闪】打出');
       }
       break;
+    }
     case 'respondSha':
       if (a.type !== 'respondSha') throw new Error('应答类型不合法');
       if (a.cardId != null) {
@@ -349,6 +351,9 @@ function validate(s: GameState, pend: Inquiry, a: Action): void {
           throw new Error('【流离】转移目标不合法');
         if (!pend.liuliTo?.includes(to.id)) throw new Error('【流离】目标不在可选范围');
       }
+      break;
+    case 'lordSkill':
+      if (a.type !== 'respondLord') throw new Error('应答类型不合法');
       break;
     case 'fanjian':
       if (a.type !== 'respondFanjian') throw new Error('应答类型不合法');
@@ -534,22 +539,28 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
     }
     case 'respondShan': {
       const f = pend.frameId != null ? s.frames.find(fr => fr.id === pend.frameId) : undefined;
+      // 护驾（主公技）：应答者可能是代主公出闪的盟友——效果归于主公（bearer）
+      const bearer = pend.aidForId != null ? s.players[pend.aidForId]! : actor;
       s.pending = null;
       if (a.cardId != null) {
         s.discard.push(removeFromHand(actor, a.cardId));
-        s.log.push({ t: 'respond', player: actor.id, card: 'shan', resp: 'shan' });
+        s.log.push({ t: 'respond', player: actor.id, card: 'shan', resp: 'shan', aid: pend.aidForId });
         if (f && f.kind === 'trick') {
           advanceTarget(s, f); // 万箭：本目标通过
         } else {
           const need = pend.needShan ?? 1;
           const played = (pend.shanPlayed ?? 0) + 1;
           if (played >= need) {
-            shaDodged(s, pend.shaSourceId!, actor.id, pend.frameId, pend.shaCardId);
+            shaDodged(s, pend.shaSourceId!, bearer.id, pend.frameId, pend.shaCardId);
           } else {
-            // 无双：还需再出一张闪
+            // 无双：还需再出一张闪（继续由同一人应答）
             s.pending = { ...pend, shanPlayed: played };
           }
         }
+      } else if (pend.aidForId != null) {
+        // 盟友不出闪：换下一个盟友，都不应则回退给主公自己
+        s.log.push({ t: 'respond', player: actor.id, card: null, resp: 'shan' });
+        askNextAid(s, pend);
       } else {
         s.log.push({ t: 'respond', player: actor.id, card: null, resp: 'shan' });
         if (f && f.kind === 'trick') {
@@ -580,7 +591,7 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       s.pending = null;
       if (a.cardId != null) {
         s.discard.push(removeFromHand(actor, a.cardId));
-        s.log.push({ t: 'respond', player: actor.id, card: 'sha', resp: 'sha' });
+        s.log.push({ t: 'respond', player: actor.id, card: 'sha', resp: 'sha', aid: pend.aidForId });
         if (f.sub !== 'juedou') {
           advanceTarget(s, f); // 南蛮：本目标通过
           return;
@@ -592,8 +603,12 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
           f.duelTurn = opponent; // 轮到对方出杀
         } else {
           // 无双：还需再打出一张杀（继续同一个人）
-          s.pending = { kind: 'respondSha', playerId: actor.id, frameId: f.id, trickSub: f.sub, trickTargetId: f.targets[0] };
+          s.pending = { kind: 'respondSha', playerId: actor.id, frameId: f.id, trickSub: f.sub, trickTargetId: f.targets[0], aidForId: pend.aidForId };
         }
+      } else if (pend.aidForId != null) {
+        // 盟友不出杀：换下一个盟友，都不应则回退给主公自己
+        s.log.push({ t: 'respond', player: actor.id, card: null, resp: 'sha' });
+        askNextAid(s, pend);
       } else {
         advanceTarget(s, f);
         dealDamage(s, actor.id, 1, opponent, f.cardId);
@@ -644,6 +659,17 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
         }
         s.log.push({ t: 'respond', player: actor.id, card: 'tao', resp: 'tao' });
         s.log.push({ t: 'heal', player: dying.id, amount: 1 });
+        // 救援（孙权·主公技）：其他吴势力角色对主公使用【桃】时，主公额外回复 1 点（M14）
+        if (
+          actor.id !== dying.id &&
+          dying.identity === 'zhu' &&
+          hasSkill(dying, 'jiuyuan') &&
+          GENERAL_FACTION[actor.general] === 'wu'
+        ) {
+          dying.hp += 1;
+          s.log.push({ t: 'skill', player: dying.id, sub: 'jiuyuan', detail: `${actor.name} 的【桃】额外回复1点` });
+          s.log.push({ t: 'heal', player: dying.id, amount: 1 });
+        }
         if (dying.hp <= 0) askNextTao(s, dying.id, pend.shaSourceId ?? null, asked);
       } else {
         s.log.push({ t: 'respond', player: actor.id, card: null, resp: 'tao' });
@@ -840,6 +866,19 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       }
       break;
     }
+    case 'respondLord': {
+      // 主公技（M14）：同意 → 逐个问同势力盟友；拒绝 → 原询问回给主公
+      s.pending = null;
+      const lp = pend.lordPend!;
+      const aids = pend.aidIds ?? [];
+      const first = aids[0];
+      if (!a.use || first == null || !s.players[first]!.alive) {
+        s.pending = { ...lp, aidForId: undefined, aidIds: undefined };
+        break;
+      }
+      s.pending = { ...lp, playerId: first, aidForId: lp.playerId, aidIds: aids };
+      break;
+    }
   }
 }
 
@@ -957,7 +996,8 @@ function stepSha(s: GameState, f: ShaFrame): void {
   const canShan =
     target.hand.some(c => canActAsShan(target, c)) || (!!target.equipment.shield && !ignoreShield);
   if (canShan) {
-    s.pending = {
+    // 护驾（曹操·主公技）：目标是主公时先问是否求援（M14）
+    askLordFirst(s, {
       kind: 'respondShan',
       playerId: target.id,
       frameId: f.id,
@@ -966,7 +1006,7 @@ function stepSha(s: GameState, f: ShaFrame): void {
       needShan: hasSkill(source, 'wushuang') ? 2 : 1,
       shanPlayed: 0,
       qinggang: ignoreShield || undefined,
-    };
+    }, 'hujia');
   } else {
     s.log.push({ t: 'respond', player: target.id, card: null, resp: 'shan' });
     shaHit(s, source.id, target.id, f.cardId);
@@ -994,6 +1034,54 @@ function shaDodged(s: GameState, sourceId: number, targetId: number, frameId?: n
     return;
   }
   if (frameId != null) advanceSha(s, frameId);
+}
+
+/** 主公技（M14）：主公需要出【闪】/【杀】时，同势力盟友是否能代劳。
+ *  注意主公技只在"持有者正处于主公位"时生效——本作武将随机分配，
+ *  曹操/刘备也可能坐在反贼位。 */
+function aidCandidates(s: GameState, lordId: number, sub: 'hujia' | 'jijiang'): number[] {
+  const lord = s.players[lordId]!;
+  if (lord.identity !== 'zhu' || !hasSkill(lord, sub)) return [];
+  const faction = GENERAL_FACTION[lord.general];
+  const isShan = sub === 'hujia';
+  return s.players
+    .filter(p => p.alive && p.id !== lordId && GENERAL_FACTION[p.general] === faction)
+    .filter(p => (isShan ? p.hand.some(c => canActAsShan(p, c)) : p.hand.some(c => canActAsSha(p, c))))
+    .map(p => p.id);
+}
+
+/**
+ * 主公技（M14）：主公需要打出（或使用）【闪】/【杀】时，先问主公是否向同势力盟友求援。
+ * 本作只接"打出"路径（护驾=出闪、激将=出杀应答）——"使用"路径由主公自己在出牌阶段决定，
+ * 记在 ADR-0019 的已知简化里。
+ */
+function askLordFirst(s: GameState, pend: Inquiry, sub: 'hujia' | 'jijiang'): void {
+  const aids = aidCandidates(s, pend.playerId, sub);
+  if (aids.length === 0) {
+    s.pending = pend;
+    return;
+  }
+  s.log.push({ t: 'skill', player: pend.playerId, sub, detail: '询问是否向同势力盟友求援' });
+  s.pending = { kind: 'lordSkill', playerId: pend.playerId, sub, lordPend: pend, aidIds: aids };
+}
+
+/** 主公技：盟友不应（或没牌了）时换下一个；都问完则回退给主公自己应答 */
+function askNextAid(s: GameState, pend: Inquiry): void {
+  const rest = (pend.aidIds ?? []).slice(1);
+  const next = rest[0];
+  if (next != null && s.players[next]!.alive) {
+    s.pending = {
+      ...pend,
+      playerId: next,
+      aidForId: pend.aidForId,
+      aidIds: rest,
+    };
+    return;
+  }
+  // 全部盟友都不应：回退给主公自己（去掉求援标记）
+  const lordPend = { ...pend, aidForId: undefined, aidIds: undefined };
+  // 万箭的情形：询问本身不区分对象；杀/南蛮：playerId 就是应出牌者
+  s.pending = lordPend;
 }
 
 /** 借刀杀人：目标拒出杀时，武器牌从 victim 的装备区转给 user */
@@ -1303,7 +1391,7 @@ function stepTrick(s: GameState, f: TrickFrame): void {
       return;
     case 'nanman':
       if (hasShaMaterial(target)) {
-        s.pending = { kind: 'respondSha', playerId: target.id, frameId: f.id, trickSub: f.sub, trickTargetId: target.id };
+        askLordFirst(s, { kind: 'respondSha', playerId: target.id, frameId: f.id, trickSub: f.sub, trickTargetId: target.id }, 'jijiang');
       } else {
         advanceTarget(s, f);
         dealDamage(s, target.id, 1, f.userId, f.cardId);
@@ -1311,7 +1399,7 @@ function stepTrick(s: GameState, f: TrickFrame): void {
       return;
     case 'wanjian':
       if (target.hand.some(c => canActAsShan(target, c)) || target.equipment.shield) {
-        s.pending = { kind: 'respondShan', playerId: target.id, frameId: f.id, trickSub: f.sub, trickTargetId: target.id };
+        askLordFirst(s, { kind: 'respondShan', playerId: target.id, frameId: f.id, trickSub: f.sub, trickTargetId: target.id }, 'hujia');
       } else {
         advanceTarget(s, f);
         dealDamage(s, target.id, 1, f.userId, f.cardId);
@@ -1372,7 +1460,7 @@ function stepTrick(s: GameState, f: TrickFrame): void {
     case 'juedou': {
       const who = s.players[f.duelTurn]!;
       if (hasShaMaterial(who)) {
-        s.pending = { kind: 'respondSha', playerId: who.id, frameId: f.id, trickSub: f.sub, trickTargetId: f.targets[0] };
+        askLordFirst(s, { kind: 'respondSha', playerId: who.id, frameId: f.id, trickSub: f.sub, trickTargetId: f.targets[0] }, 'jijiang');
       } else {
         const opponent = who.id === f.userId ? f.targets[0]! : f.userId;
         advanceTarget(s, f);
