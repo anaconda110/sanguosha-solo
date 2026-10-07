@@ -226,6 +226,29 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
           return { type: 'useSkill', sub: 'fanjian', cardId: cheapest(hand, 1)[0]!.id, targetIds: [t] };
         }
       }
+      // 8.7 借刀杀人：让持武器的敌人去打另一个敌人（或逼其交出武器）
+      const jdCard = first('jiedao');
+      if (jdCard) {
+        const foes = enemies();
+        for (const victim of foes) {
+          const vp = s.players[victim]!;
+          if (!vp.equipment.weapon) continue;
+          const shaTarget = foes.find(
+            id => id !== victim && s.players[id]!.alive && !isKongcheng(s.players[id]!) && inShaRange(s, victim, id),
+          );
+          if (shaTarget != null)
+            return { type: 'playTrick', cardId: jdCard.id, targetId: victim, targetIds: [victim, shaTarget] };
+        }
+      }
+      // 8.8 五谷丰登：己方多、敌方少时才有正收益
+      const wg = first('wugu');
+      if (wg) {
+        const foes = enemies();
+        const others = v.players.filter(p => p.alive && p.id !== playerId);
+        const foeCount = others.filter(p => foes.includes(p.id)).length;
+        const allyCount = others.length - foeCount;
+        if (allyCount > foeCount) return { type: 'playTrick', cardId: wg.id };
+      }
       // 9. 群体锦囊（闪电不用——ADR-0005）：只在自己人不会吃亏时才放（M12）。
       //    只用手牌数估计命中概率——绝不读他人手牌（本项目 AI 的公开信息约束）。
       const others = v.players.filter(p => p.alive && p.id !== playerId);
@@ -390,6 +413,22 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
     case 'fanjian': {
       // 反间应答：猜花色。无信息可用时按牌堆构成猜【♥】（桃/杀/闪红牌最多）
       return { type: 'respondFanjian', suit: '♥' };
+    }
+    case 'wuguPick': {
+      // 五谷丰登：按价值取最高的一张（桃 > 闪 > 杀 > 其余，同价值取点数大者）
+      const pool = pend.wuguCards ?? [];
+      const best = [...pool].sort(
+        (a, b) => cardValue(b) - cardValue(a) || b.rank - a.rank || a.id - b.id,
+      )[0];
+      return { type: 'respondWugu', cardId: best ? best.id : -1 };
+    }
+    case 'jiedao': {
+      // 借刀：能出杀就打（打的是借刀人指定的目标），不出则丢武器——所以先看武器值不值
+      const jd = pend.jiedao!;
+      const sm = shaMaterial(me, hand);
+      // 交出武器 vs 打出杀：手牌充裕时宁可出杀（杀通常比武器便宜）
+      if (sm && hand.length >= 2) return { type: 'respondJiedao', cardId: sm.id };
+      return { type: 'respondJiedao', cardId: null };
     }
     case 'discard': {
       // 保留价值：桃 > 闪 > 杀 > 锦囊/装备，弃最不值钱的

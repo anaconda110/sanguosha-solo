@@ -16,6 +16,11 @@ function cardTotal(s: GameState): number {
   const judging = s.judgeState ? (s.judgeState.zoneCard ? 2 : 1) : 0;
   // 观星翻看的牌握在询问里（M7）
   const guanxing = s.pending?.kind === 'guanxing' ? (s.pending.guanxingCards?.length ?? 0) : 0;
+  // 五谷丰登亮出的牌握在帧里（M13）
+  const wugu = s.frames.reduce(
+    (n, f) => n + (f.kind === 'trick' ? (f.wuguCards?.length ?? 0) : 0),
+    0,
+  );
   return (
     s.deck.length +
     s.discard.length +
@@ -23,7 +28,8 @@ function cardTotal(s: GameState): number {
     equips +
     judgements +
     judging +
-    guanxing
+    guanxing +
+    wugu
   );
 }
 

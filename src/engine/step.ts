@@ -184,6 +184,18 @@ function validate(s: GameState, pend: Inquiry, a: Action): void {
             throw new Error('【兵粮寸断】目标距离超过 1');
           return;
         }
+        if (asSub === 'jiedao') {
+          // 借刀杀人：指定一名有武器的角色与一个杀的目标（M13）
+          const [victimId, shaTargetId] = a.targetIds ?? [];
+          const victim = victimId == null ? undefined : s.players[victimId];
+          if (!victim || !victim.alive || victim.id === actor.id) throw new Error('【借刀杀人】目标不合法');
+          if (!victim.equipment.weapon) throw new Error('【借刀杀人】目标未装备武器');
+          const st = shaTargetId == null ? undefined : s.players[shaTargetId];
+          if (!st || !st.alive || st.id === victim.id) throw new Error('【借刀杀人】杀的目标不合法');
+          if (isKongcheng(st)) throw new Error('目标【空城】，不能成为【杀】的目标');
+          if (!inShaRange(s, victim.id, st.id)) throw new Error('【借刀杀人】杀的目标超出其攻击范围');
+          return;
+        }
         const needsTarget = asSub === 'guohe' || asSub === 'shunshou' || asSub === 'juedou';
         if (needsTarget) {
           const t = a.targetId == null ? undefined : s.players[a.targetId];
@@ -341,6 +353,17 @@ function validate(s: GameState, pend: Inquiry, a: Action): void {
     case 'fanjian':
       if (a.type !== 'respondFanjian') throw new Error('应答类型不合法');
       break;
+    case 'wuguPick':
+      if (a.type !== 'respondWugu') throw new Error('应答类型不合法');
+      if (!pend.wuguCards?.some(c => c.id === a.cardId)) throw new Error('五谷丰登：选择的牌不合法');
+      break;
+    case 'jiedao':
+      if (a.type !== 'respondJiedao') throw new Error('应答类型不合法');
+      if (a.cardId != null) {
+        const c = actor.hand.find(x => x.id === a.cardId);
+        if (!c || !canActAsSha(actor, c)) throw new Error('这张牌不能当【杀】使用');
+      }
+      break;
   }
 }
 
@@ -394,6 +417,22 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
           // 桃园结义：对每名存活角色（含使用者，从使用者起按座次）结算，逐目标可无懈（M11）
           s.discard.push(card);
           s.frames.push(makeTrickFrame(s, actor.id, asSub, card));
+          break;
+        }
+        case 'wugu': {
+          // 五谷丰登：对每名存活角色（从使用者起按座次）结算，逐目标可无懈（M13）
+          s.discard.push(card);
+          s.frames.push(makeTrickFrame(s, actor.id, asSub, card));
+          break;
+        }
+        case 'jiedao': {
+          // 借刀杀人：指定持武器者与杀的目标（M13）
+          const [victimId, shaTargetId] = a.targetIds ?? [];
+          s.discard.push(card);
+          s.log.push({ t: 'playCard', player: actor.id, card: asSub, targets: [...a.targetIds!] });
+          const fr = makeTrickFrame(s, actor.id, asSub, card, [victimId!]);
+          fr.jiedaoTargetId = shaTargetId;
+          s.frames.push(fr);
           break;
         }
         case 'lebusi': {
@@ -764,6 +803,43 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       }
       break;
     }
+    case 'respondWugu': {
+      // 五谷丰登：取走所选的一张，帧推进到下一个目标
+      s.pending = null;
+      const f = topFrame(s, pend.frameId);
+      const pool = f.wuguCards!;
+      const i = pool.findIndex(c => c.id === a.cardId);
+      const [picked] = pool.splice(i, 1);
+      actor.hand.push(picked!);
+      s.log.push({ t: 'gainCard', player: actor.id, from: actor.id });
+      advanceTarget(s, f);
+      if (f.idx >= f.targets.length) {
+        // 最后一个目标领完：剩余的牌进弃牌堆
+        s.discard.push(...pool);
+        s.log.push({ t: 'discardCards', player: f.userId, n: pool.length });
+        f.wuguCards = [];
+      }
+      break;
+    }
+    case 'respondJiedao': {
+      // 借刀杀人：打出杀则视为对指定目标使用；否则交出武器
+      s.pending = null;
+      const f = topFrame(s, pend.frameId);
+      const jd = pend.jiedao!;
+      const victim = s.players[jd.victim]!;
+      if (a.cardId != null) {
+        const card = removeFromHand(victim, a.cardId);
+        s.discard.push(card);
+        s.log.push({ t: 'playCard', player: victim.id, card: 'sha', target: pend.targetId });
+        s.log.push({ t: 'ability', player: jd.user, sub: 'jiedao', detail: `${victim.name} 对 ${s.players[pend.targetId!]!.name} 使用【杀】` });
+        advanceTarget(s, f);
+        startSha(s, victim.id, card.id, [pend.targetId!]);
+      } else {
+        transferWeapon(s, jd.user, victim.id);
+        advanceTarget(s, f);
+      }
+      break;
+    }
   }
 }
 
@@ -918,6 +994,19 @@ function shaDodged(s: GameState, sourceId: number, targetId: number, frameId?: n
     return;
   }
   if (frameId != null) advanceSha(s, frameId);
+}
+
+/** 借刀杀人：目标拒出杀时，武器牌从 victim 的装备区转给 user */
+function transferWeapon(s: GameState, userId: number, victimId: number): void {
+  const victim = s.players[victimId]!;
+  const w = victim.equipment.weapon;
+  if (!w) return;
+  delete victim.equipment.weapon;
+  s.log.push({ t: 'unequip', player: victimId, sub: w.sub });
+  loseEquipTrigger(s, victim);
+  s.players[userId]!.hand.push(w);
+  s.log.push({ t: 'gainCard', player: userId, from: victimId });
+  s.log.push({ t: 'ability', player: userId, sub: 'jiedao', detail: `获得 ${victim.name} 的【${CARD_INFO[w.sub].display}】` });
 }
 
 function trickTargetOf(f: Frame): number | undefined {
@@ -1228,6 +1317,58 @@ function stepTrick(s: GameState, f: TrickFrame): void {
         dealDamage(s, target.id, 1, f.userId, f.cardId);
       }
       return;
+    case 'wugu': {
+      // 五谷丰登：亮出 N 张（N = 目标数），逐目标各取一张（M13）
+      if (!f.wuguCards) {
+        f.wuguCards = [];
+        for (let i = 0; i < f.targets.length; i++) {
+          reshuffleIfNeeded(s);
+          if (s.deck.length === 0) break;
+          f.wuguCards.push(s.deck.pop()!);
+        }
+        s.log.push({ t: 'ability', player: target.id, sub: 'wugu', detail: `亮出 ${f.wuguCards.length} 张牌` });
+        for (const c of f.wuguCards) s.log.push({ t: 'wuguReveal', player: target.id, card: c });
+      }
+      const pool = f.wuguCards;
+      if (pool.length === 0) {
+        advanceTarget(s, f);
+        return;
+      }
+      if (pool.length === 1) {
+        const c = pool.pop()!;
+        target.hand.push(c);
+        s.log.push({ t: 'gainCard', player: target.id, from: target.id });
+        advanceTarget(s, f);
+        return;
+      }
+      s.pending = { kind: 'wuguPick', playerId: target.id, frameId: f.id, wuguCards: [...pool] };
+      return;
+    }
+    case 'jiedao': {
+      // 借刀杀人：持刀者需对指定目标使用【杀】，否则武器交给借刀人（M13）
+      const victim = target;
+      const w = victim.equipment.weapon;
+      if (!w) {
+        advanceTarget(s, f);
+        return;
+      }
+      const shaTarget = s.players[f.jiedaoTargetId!]!;
+      const canSha = shaTarget.alive && hasShaMaterial(victim) && inShaRange(s, victim.id, shaTarget.id);
+      if (canSha) {
+        s.pending = {
+          kind: 'jiedao',
+          playerId: victim.id,
+          frameId: f.id,
+          jiedao: { user: f.userId, victim: victim.id, weaponSub: w.sub },
+          targetId: shaTarget.id,
+        };
+      } else {
+        // 无法出杀：武器归属借刀人
+        transferWeapon(s, f.userId, victim.id);
+        advanceTarget(s, f);
+      }
+      return;
+    }
     case 'juedou': {
       const who = s.players[f.duelTurn]!;
       if (hasShaMaterial(who)) {

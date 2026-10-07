@@ -96,6 +96,8 @@ const selected = ref<{ cardId: number; sub: CardSub } | null>(null);
 const selected2 = ref<Card | null>(null);
 /** 方天画戟：多目标选择（确认后一次性使用） */
 const fangtianTargets = ref<number[]>([]);
+/** 借刀杀人（M13）：两步——先点持武器者，再点杀的目标 */
+const jiedaoVictim = ref<number | null>(null);
 /** 贯石斧：弃两张手牌强行命中的选择 */
 const guanshiSel = ref<number[]>([]);
 /** 离间三步：按钮 → 点一张手牌 → 点两名男性（先选决斗使用者） */
@@ -347,6 +349,7 @@ function cancelSel() {
   selected.value = null;
   selected2.value = null;
   fangtianTargets.value = [];
+  jiedaoVictim.value = null;
 }
 
 function newGame() {
@@ -604,6 +607,13 @@ function isTargetable(pid: number): boolean {
   const t = view.value.players[pid]!;
   if (!t.alive || t.id === humanId.value) return false;
   if (sel.sub === 'sha') return inShaRange(state, humanId.value, pid);
+  if (sel.sub === 'jiedao') {
+    // 借刀：先选持武器者（不可选自己），再选其攻击范围内的杀目标
+    if (jiedaoVictim.value == null) {
+      return t.alive && t.id !== humanId.value && !!state.players[pid]!.equipment.weapon;
+    }
+    return t.alive && t.id !== jiedaoVictim.value && inShaRange(state, jiedaoVictim.value, pid);
+  }
   if (sel.sub === 'shunshou')
     return hasAnyCard(state.players[pid]!) && seatDistance(state, humanId.value, pid) <= 1;
   if (sel.sub === 'lebusi') return !t.judgements.includes('lebusi');
@@ -643,7 +653,7 @@ function onCardClick(c: Card) {
       act({ type: 'playEquip', cardId: c.id });
     } else if (
       c.sub === 'wuzhong' || c.sub === 'nanman' || c.sub === 'wanjian' ||
-      c.sub === 'taoyuan' || c.sub === 'shandian'
+      c.sub === 'taoyuan' || c.sub === 'shandian' || c.sub === 'wugu'
     ) {
       act({ type: 'playTrick', cardId: c.id }); // 无需指定目标
     } else if (c.sub === 'sha' && canSha.value) {
@@ -655,9 +665,10 @@ function onCardClick(c: Card) {
       fangtianTargets.value = [];
     } else if (
       c.sub === 'guohe' || c.sub === 'shunshou' || c.sub === 'juedou' ||
-      c.sub === 'lebusi' || c.sub === 'bingliang'
+      c.sub === 'lebusi' || c.sub === 'bingliang' || c.sub === 'jiedao'
     ) {
       selected.value = selected.value?.cardId === c.id ? null : { cardId: c.id, sub: c.sub };
+      jiedaoVictim.value = null;
     } else if (myGeneral.value === 'dajiao' && c.suit === ('♦' as Suit) && c.sub !== 'tao' && CARD_INFO[c.sub].kind !== 'trick') {
       // 国色：方块非锦囊牌当乐不思蜀
       selected.value = selected.value?.cardId === c.id ? null : { cardId: c.id, sub: 'lebusi' };
@@ -726,6 +737,25 @@ function onSeatClick(pid: number) {
   }
   if (!selected.value || pend.value?.kind !== 'play') return;
   if (!isTargetable(pid)) return;
+  if (selected.value.sub === 'jiedao') {
+    // 借刀杀人：第一步点持武器者，第二步点他要打的杀目标（M13）
+    if (jiedaoVictim.value == null) {
+      jiedaoVictim.value = pid;
+      return;
+    }
+    if (pid === jiedaoVictim.value) {
+      jiedaoVictim.value = null; // 再点自己取消
+      return;
+    }
+    act({
+      type: 'playTrick',
+      cardId: selected.value.cardId,
+      targetId: jiedaoVictim.value,
+      targetIds: [jiedaoVictim.value, pid],
+    });
+    jiedaoVictim.value = null;
+    return;
+  }
   if (selected.value.sub === 'sha') {
     if (fangtianEligible.value) {
       // 方天画戟：目标点击切换选择，确认按钮统一使用
@@ -937,6 +967,8 @@ function evText(e: GameEvent): string {
       return `${n(e.player)} 弃置全部手牌（主公杀死忠臣的惩罚）`;
     case 'discardCards':
       return `${n(e.player)} 弃置 ${e.n} 张牌`;
+    case 'wuguReveal':
+      return `五谷丰登亮出【${disp(e.card.sub)}】${e.card.suit}${e.card.rank}`;
     case 'equip':
       return `${n(e.player)} 装备了【${disp(e.sub)}】`;
     case 'unequip':
@@ -974,7 +1006,7 @@ function evText(e: GameEvent): string {
 <template>
   <div class="app">
     <header>
-      <h1>三国杀单机 <span class="m1">M12</span></h1>
+      <h1>三国杀单机 <span class="m1">M13</span></h1>
       <div class="meta">
         <span class="seed">seed {{ seed }}</span>
         <span v-if="me" class="badge" :class="'id-' + me.identity">
@@ -1147,7 +1179,10 @@ function evText(e: GameEvent): string {
           <button class="btn ghost" @click="cancelSel">取消</button>
         </template>
         <template v-else-if="selected">
-          已选【{{ disp(selected.sub) }}】——点目标玩家使用
+          <template v-if="selected.sub === 'jiedao'">
+            【借刀杀人】{{ jiedaoVictim == null ? '点一名装备了武器的角色' : `${view.players[jiedaoVictim]!.name} 需出杀——点他要打的目标` }}
+          </template>
+          <template v-else>已选【{{ disp(selected.sub) }}】——点目标玩家使用</template>
           <button class="btn ghost" @click="cancelSel">取消</button>
         </template>
         <template v-else>
@@ -1250,6 +1285,23 @@ function evText(e: GameEvent): string {
       <template v-else-if="pend?.kind === 'fanjian'">
         【反间】—— {{ view.players[pend.fanjian!.sourceId]!.name }} 令你猜一种花色，猜错将受到 1 点伤害：
         <button v-for="s in SUIT_LIST" :key="s" class="btn" @click="respondFanjian(s)">{{ s }}</button>
+      </template>
+      <template v-else-if="pend?.kind === 'wuguPick'">
+        【五谷丰登】—— 亮出的牌（公开）：请选一张
+        <button
+          v-for="c in pend.wuguCards ?? []"
+          :key="c.id"
+          class="btn"
+          @click="act({ type: 'respondWugu', cardId: c.id })"
+        >{{ disp(c.sub) }} {{ c.suit }}{{ c.rank }}</button>
+      </template>
+      <template v-else-if="pend?.kind === 'jiedao'">
+        【借刀杀人】—— {{ view.players[pend.jiedao!.user]!.name }} 令你对
+        {{ view.players[pend.targetId!]!.name }} 使用【杀】，否则你的【{{ disp(pend.jiedao!.weaponSub) }}】将交给他：
+        <button class="btn" :disabled="!shaMaterialNow()" @click="act({ type: 'respondJiedao', cardId: shaMaterialNow()!.id })">
+          使用【杀】
+        </button>
+        <button class="btn" @click="act({ type: 'respondJiedao', cardId: null })">交出武器</button>
       </template>
       <template v-else-if="pend?.kind === 'respondTao'">
         {{ view.players[view.pending!.dyingId!]!.name }} 濒死 ——

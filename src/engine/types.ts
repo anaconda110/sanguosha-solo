@@ -7,6 +7,7 @@ export type CardKind = 'basic' | 'trick' | 'equip';
 export type CardSub =
   | 'sha' | 'shan' | 'tao'
   | 'wuzhong' | 'guohe' | 'shunshou' | 'juedou' | 'nanman' | 'wanjian' | 'taoyuan' | 'wuxie'
+  | 'wugu' | 'jiedao'
   | 'lebusi' | 'bingliang' | 'shandian'
   | 'liannu' | 'qinggang' | 'cixiong' | 'qinglong' | 'zhangba' | 'guanshi' | 'fangtian' | 'qilin'
   | 'bagua'
@@ -31,6 +32,8 @@ export const CARD_INFO: Record<CardSub, CardInfo> = {
   wanjian: { kind: 'trick', display: '万箭齐发' },
   taoyuan: { kind: 'trick', display: '桃园结义' },
   wuxie: { kind: 'trick', display: '无懈可击' },
+  wugu: { kind: 'trick', display: '五谷丰登' },
+  jiedao: { kind: 'trick', display: '借刀杀人' },
   lebusi: { kind: 'trick', display: '乐不思蜀' },
   bingliang: { kind: 'trick', display: '兵粮寸断' },
   shandian: { kind: 'trick', display: '闪电' },
@@ -216,6 +219,10 @@ export interface TrickFrame {
   duelTurn: number;
   /** 决斗专用：当前应答者已打出的杀数（无双需要两张） */
   duelShaPlayed: number;
+  /** 五谷丰登：翻开待领的牌（逐目标各取一张，剩余进弃牌堆） */
+  wuguCards?: Card[];
+  /** 借刀杀人：被要求出杀者应当攻击的目标 */
+  jiedaoTargetId?: number;
 }
 
 /** 延时锦囊判定帧（ADR-0005）：判定阶段逐张结算判定区里的锦囊 */
@@ -288,7 +295,7 @@ export interface PendingTrigger {
  */
 export interface Inquiry {
   playerId: number;
-  kind: 'play' | 'respondShan' | 'respondSha' | 'respondWuxie' | 'respondTao' | 'shaAgain' | 'pickCard' | 'trigger' | 'skillCard' | 'discard' | 'cixiong' | 'guanshi' | 'guanxing' | 'liuli' | 'fanjian';
+  kind: 'play' | 'respondShan' | 'respondSha' | 'respondWuxie' | 'respondTao' | 'shaAgain' | 'pickCard' | 'trigger' | 'skillCard' | 'discard' | 'cixiong' | 'guanshi' | 'guanxing' | 'liuli' | 'fanjian' | 'wuguPick' | 'jiedao';
   /** respondShan/respondTao：杀的来源（结算奖惩用） */
   shaSourceId?: number;
   /** respondTao：濒死的玩家 */
@@ -333,6 +340,10 @@ export interface Inquiry {
   liuliSourceId?: number;
   /** fanjian：反间的发起者与待展示的手牌（M11） */
   fanjian?: { sourceId: number; cardId: number };
+  /** wuguPick：五谷丰登待选的牌（公开信息，全员可见） */
+  wuguCards?: Card[];
+  /** jiedao：借刀——被要求出杀者、杀的目标、借刀人（拒出杀则武器归属借刀人） */
+  jiedao?: { user: number; victim: number; weaponSub: CardSub };
 }
 
 export type WinSide = 'zhu' | 'fan' | 'nei' | 'draw';
@@ -349,6 +360,7 @@ export type GameEvent =
   | { t: 'rewardDraw'; player: number; n: number }
   | { t: 'penaltyDiscard'; player: number; n: number }
   | { t: 'discardCards'; player: number; n: number }
+  | { t: 'wuguReveal'; player: number; card: Card }
   | { t: 'equip'; player: number; sub: CardSub }
   | { t: 'unequip'; player: number; sub: CardSub }
   | { t: 'gainCard'; player: number; from: number }
@@ -363,10 +375,12 @@ export type GameEvent =
 export type Action =
   | { type: 'playSha'; cardId: number; targetId: number; /** 丈八蛇矛：第二张手牌 */ cardId2?: number; /** 方天画戟：多目标（2-3 个） */ targetIds?: number[] }
   | { type: 'playTao'; cardId: number }
-  | { type: 'playTrick'; cardId: number; targetId?: number }
+  | { type: 'playTrick'; cardId: number; targetId?: number; /** 借刀杀人：[持武器者, 杀的目标] */ targetIds?: number[] }
   | { type: 'playEquip'; cardId: number }
   | { type: 'useSkill'; sub: SkillSub; /** 离间/青囊/反间：弃置（或展示）的手牌 */ cardId?: number; /** 离间：两名男性（前者为决斗使用者）；仁德/青囊/反间：目标 */ targetIds?: number[]; /** 制衡/仁德：多张手牌 */ cardIds?: number[] }
   | { type: 'respondFanjian'; /** 反间：猜测的花色 */ suit: Suit }
+  | { type: 'respondWugu'; /** 五谷丰登：领取的牌 */ cardId: number }
+  | { type: 'respondJiedao'; /** 借刀杀人：打出的杀（null = 交出武器） */ cardId: number | null }
   | { type: 'endPlay' }
   | { type: 'respondShan'; cardId: number | null }
   | { type: 'respondSha'; cardId: number | null }

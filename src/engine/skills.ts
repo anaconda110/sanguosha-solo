@@ -53,5 +53,7 @@ export function asTrickSub(p: PlayerState, c: Card): CardSub | null {
 
 const CARD_KIND_TRICK = (c: Card) => TRICK_SUBS.has(c.sub);
 const TRICK_SUBS = new Set<CardSub>([
-  'wuzhong', 'guohe', 'shunshou', 'juedou', 'nanman', 'wanjian', 'taoyuan', 'wuxie', 'lebusi', 'bingliang', 'shandian',
+  'wuzhong', 'guohe', 'shunshou', 'juedou', 'nanman', 'wanjian', 'taoyuan', 'wuxie',
+  'wugu', 'jiedao',
+  'lebusi', 'bingliang', 'shandian',
 ]);

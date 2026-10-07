@@ -81,10 +81,11 @@ function cardTotal(s: GameState): number {
   const judgements = s.players.reduce((n, p) => n + p.judgements.length, 0);
   const judging = s.judgeState ? (s.judgeState.zoneCard ? 2 : 1) : 0;
   const guanxing = s.pending?.kind === 'guanxing' ? (s.pending.guanxingCards?.length ?? 0) : 0;
+  const wugu = s.frames.reduce((n, f) => n + (f.kind === 'trick' ? (f.wuguCards?.length ?? 0) : 0), 0);
   return (
     s.deck.length + s.discard.length +
     s.players.reduce((n, p) => n + p.hand.length, 0) +
-    equips + judgements + judging + guanxing
+    equips + judgements + judging + guanxing + wugu
   );
 }
 
@@ -239,6 +240,64 @@ console.log('\n[6] 构造局面');
     s3.log.some(e => e.t === 'draw' && e.player === me.id && e.n === 2),
     `pending=${(s3.pending as Inquiry | null)?.kind}`,
   );
+}
+
+{
+  // 借刀杀人（M13）：持刀者出杀 → 视为对指定目标使用杀；目标受伤
+  const s = setup(1);
+  const me = s.players[0]!;
+  me.hand = [{ id: 9401, sub: 'jiedao', suit: '♣', rank: 3 }];
+  const victim = s.players[1]!;
+  victim.hand = [{ id: 9402, sub: 'sha', suit: '♠', rank: 4 }];
+  victim.equipment.weapon = { id: 9403, sub: 'qinglong', suit: '♠', rank: 5 };
+  const t = s.players[2]!;
+  t.hand = [];
+  t.equipment.weapon = { id: 9404, sub: 'liannu', suit: '♣', rank: 1 }; // 保证距离够
+  for (const idx of [3, 4]) s.players[idx]!.hand = [];
+  s.pending = { kind: 'play', playerId: me.id };
+  const s1 = step(s, { type: 'playTrick', cardId: 9401, targetId: victim.id, targetIds: [victim.id, t.id] });
+  check('【借刀杀人】开出应答询问（由持刀者应答）', s1.pending?.kind === 'jiedao' && s1.pending.playerId === victim.id);
+  const hpBefore = t.hp;
+  const s2 = step(s1, { type: 'respondJiedao', cardId: 9402 }); // 出杀
+  const dmg = s2.log.some(e => e.t === 'damage' && e.player === t.id && e.source === victim.id);
+  check('【借刀杀人】出杀 → 对指定目标造成伤害（或走完杀帧）', dmg || s2.players[t.id]!.hp < hpBefore || s2.pending != null);
+}
+{
+  // 借刀杀人：拒出杀 → 武器转交借刀人
+  const s = setup(1);
+  const me = s.players[0]!;
+  me.hand = [{ id: 9411, sub: 'jiedao', suit: '♣', rank: 3 }];
+  const victim = s.players[1]!;
+  victim.hand = []; // 无杀可出
+  victim.equipment.weapon = { id: 9412, sub: 'qinglong', suit: '♠', rank: 5 };
+  const t = s.players[2]!;
+  t.hand = [];
+  s.pending = { kind: 'play', playerId: me.id };
+  const s1 = step(s, { type: 'playTrick', cardId: 9411, targetId: victim.id, targetIds: [victim.id, t.id] });
+  check(
+    '【借刀杀人】无法出杀 → 武器直接归借刀人',
+    s1.players[me.id]!.hand.some(c => c.id === 9412) && !s1.players[victim.id]!.equipment.weapon,
+  );
+}
+{
+  // 五谷丰登（M13）：亮出 N 张，逐目标各取一张；剩余进弃牌堆
+  const s = setup(1);
+  const me = s.players[0]!;
+  me.hand = [{ id: 9421, sub: 'wugu', suit: '♥', rank: 3 }];
+  for (const idx of [1, 2, 3, 4]) {
+    s.players[idx]!.hand = [];
+    s.players[idx]!.equipment = {}; // 确保不会因装备触发别的分支
+  }
+  s.pending = { kind: 'play', playerId: me.id };
+  const s1 = step(s, { type: 'playTrick', cardId: 9421 });
+  const p1 = s1.pending as Inquiry | null;
+  check('【五谷丰登】开出取牌询问（首个目标是自己）', p1?.kind === 'wuguPick' && p1.playerId === me.id);
+  const pool = p1?.wuguCards ?? [];
+  check('【五谷丰登】亮出的牌数 = 存活人数（5）', pool.length === 5, `实际 ${pool.length}`);
+  if (pool.length === 5) {
+    const s2 = step(s1, { type: 'respondWugu', cardId: pool[0]!.id });
+    check('【五谷丰登】取走后该牌进入手牌', s2.players[me.id]!.hand.some(c => c.id === pool[0]!.id));
+  }
 }
 
 console.log(failed === 0 ? '\n全部通过 ✓' : `\n${failed} 项失败 ✗`);
