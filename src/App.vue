@@ -6,6 +6,7 @@ import { hasAnyCard, inShaRange, seatDistance, step } from './engine/step';
 import { CARD_INFO, GENERAL_INFO, GENERAL_SEX, GENERAL_SKILLS, IDENTITY_NAMES, SKILL_INFO } from './engine/types';
 import type { Action, Card, CardKind, CardSub, EquipSlot, GameEvent, GeneralSub, Phase, SkillSub, Suit, WinSide } from './engine/types';
 import { viewOf } from './engine/view';
+import { clearSave, hasSave, loadSave, saveGame } from './persist';
 import { emptyBatch, runOneGame } from './stats';
 
 function randomSeed() {
@@ -86,10 +87,17 @@ function onAvatarError(name: string) {
 }
 
 const seed = ref(randomSeed());
+/** 人类座次；-1 = 观战（5 名 AI 自战，M15） */
 const humanId = ref(Math.floor(Math.random() * 5));
 let state = setup(seed.value);
 let gameId = 0;
 const view = ref(viewOf(state, humanId.value));
+/** 观战模式：无真人手牌与询问，全部由 AI 应答 */
+const spectate = ref(false);
+/** 是否已有存档（"继续上局"按钮显隐） */
+const saveExists = ref(hasSave());
+/** 种子输入框（M15）：显示当前种子，可改后按此开局 */
+const seedInput = ref<number>(seed.value);
 /** 出牌阶段选中的手牌：杀（含技能转换）或需指定目标的锦囊 */
 const selected = ref<{ cardId: number; sub: CardSub } | null>(null);
 /** 丈八蛇矛：与 selected 配对的第二张手牌（两张当杀） */
@@ -242,14 +250,27 @@ const flashesFor = (pid: number) => flashes.value.filter(f => f.playerId === pid
 // —— 环形桌位布局（ADR-0009）：自己固定下方，其余按顺时针座次环绕 ——
 // 相对座次 offset ∈ {1,2,3,4}（1 = 下家）映射到方位；5 人局四家分别落 右/上右/上左/左
 const OFFSET_POS: Record<number, string> = { 1: 'right', 2: 'top-right', 3: 'top-left', 4: 'left' };
-/** 从我的座次出发，其余玩家的顺时针次序（死者也保持在环上，不跳动） */
+/** 观战模式下的五个方位（自己也在环上，M15） */
+const RING_POS = ['bottom', 'right', 'top-right', 'top-left', 'left'];
+/** 从我的座次出发，其余玩家的顺时针次序（死者也保持在环上，不跳动）；观战时即座次顺序 */
 const ringOrder = computed(() => {
   const n = view.value.players.length;
   const out: number[] = [];
+  if (spectate.value) {
+    for (let i = 0; i < n; i++) out.push(i);
+    return out;
+  }
   for (let k = 1; k < n; k++) out.push((humanId.value + k) % n);
   return out;
 });
 const seatPos = computed<Record<number, string>>(() => {
+  if (spectate.value) {
+    const map: Record<number, string> = {};
+    ringOrder.value.forEach((pid, i) => {
+      map[pid] = RING_POS[i] ?? 'right';
+    });
+    return map;
+  }
   const map: Record<number, string> = { [humanId.value]: 'bottom' };
   ringOrder.value.forEach((pid, i) => {
     map[pid] = OFFSET_POS[i + 1] ?? 'right';
@@ -259,7 +280,7 @@ const seatPos = computed<Record<number, string>>(() => {
 const orderedPlayers = computed(() => {
   // 自下而上：底部自己、右侧、上右、上左、左侧（DOM 顺序仅作兜底，位置由 class 决定）
   const byId = new Map(view.value.players.map(p => [p.id, p]));
-  const self = byId.get(humanId.value);
+  const self = spectate.value ? undefined : byId.get(humanId.value);
   const rest = ringOrder.value.map(id => byId.get(id)!).filter(Boolean);
   return self ? [self, ...rest] : rest;
 });
@@ -304,7 +325,7 @@ function askAi(playerId: number): Promise<Action | null> {
 async function scheduleAi() {
   const p = view.value.pending;
   if (!p || view.value.winner) return;
-  if (p.playerId === humanId.value && view.value.me) return; // 等真人操作
+  if (!spectate.value && p.playerId === humanId.value && view.value.me) return; // 等真人操作
   const gid = gameId;
   window.setTimeout(async () => {
     if (gid !== gameId || state.winner || !state.pending) return;
@@ -316,12 +337,24 @@ async function scheduleAi() {
     if (!a) return;
     applyStep(a);
     void scheduleAi();
-  }, 550);
+  }, spectate.value ? 700 : 550);
 }
 void scheduleAi();
 
 function refresh() {
   view.value = viewOf(state, humanId.value);
+  persist();
+}
+
+/** 存档（M15）：每次状态推进后写一次；已终局则清档（不必续） */
+function persist() {
+  if (state.winner) {
+    clearSave();
+    saveExists.value = false;
+    return;
+  }
+  saveGame({ seed: seed.value, humanId: humanId.value, spectate: spectate.value, state });
+  saveExists.value = true;
 }
 
 function act(a: Action) {
@@ -352,11 +385,8 @@ function cancelSel() {
   jiedaoVictim.value = null;
 }
 
-function newGame() {
-  gameId++;
-  seed.value = randomSeed();
-  humanId.value = Math.floor(Math.random() * 5);
-  state = setup(seed.value);
+/** 通用重置：新局与续局共用（不动 state/seed/humanId 的赋值） */
+function resetUi() {
   cancelSel();
   discardSel.value = [];
   guanshiSel.value = [];
@@ -374,12 +404,68 @@ function newGame() {
   scheduleAi();
 }
 
-const me = computed(() => view.value.me);
+function newGame(opts: { spectate?: boolean } = {}) {
+  gameId++;
+  seed.value = randomSeed();
+  spectate.value = opts.spectate ?? false;
+  humanId.value = spectate.value ? -1 : Math.floor(Math.random() * 5);
+  state = setup(seed.value);
+  seedInput.value = seed.value;
+  resetUi();
+}
+
+/** 按手填的种子开局（M15）：同种子 + 同操作 = 同结局（ADR-0002/0005） */
+function newGameWithSeed() {
+  const n = Math.floor(Number(seedInput.value));
+  if (!Number.isFinite(n) || n < 0) return;
+  gameId++;
+  seed.value = n | 0;
+  spectate.value = false;
+  humanId.value = Math.floor(Math.random() * 5);
+  state = setup(seed.value);
+  resetUi();
+}
+
+/** 续局（M15）：从 localStorage 恢复状态与日志，接着打 */
+function resumeGame() {
+  const sv = loadSave();
+  if (!sv) {
+    saveExists.value = false;
+    return;
+  }
+  gameId++;
+  seed.value = sv.seed;
+  spectate.value = sv.spectate ?? sv.humanId < 0;
+  humanId.value = sv.spectate || sv.humanId < 0 ? -1 : sv.humanId;
+  state = sv.state;
+  resetUi();
+}
+
+/** 观战（M15）：五个座次全由 AI 应答，纯看戏 */
+function startSpectate() {
+  newGame({ spectate: true });
+}
+
+const me = computed(() => (spectate.value ? null : view.value.me));
 const meP = computed(() => view.value.players.find(p => p.id === humanId.value));
-const myGeneral = computed(() => state.players[humanId.value]!.general);
+/** 观战时没有"我的武将"——用主公代替，避免 computed 里索引 -1 崩溃 */
+const myGeneral = computed(() => state.players[Math.max(0, humanId.value)]!.general);
 const pend = computed(() => {
+  if (spectate.value) return null;
   const p = view.value.pending;
   return p && p.playerId === humanId.value && view.value.me ? p : null;
+});
+/** 观战模式下的提示文字（当前轮到谁、在等什么） */
+const spectateHint = computed(() => {
+  const p = view.value.pending;
+  if (!p) return '';
+  const KIND: Record<string, string> = {
+    play: '出牌', respondShan: '要【闪】', respondSha: '要【杀】', respondTao: '濒死求桃',
+    respondWuxie: '无懈询问', pickCard: '选牌', trigger: '发动技能', skillCard: '鬼才改判',
+    discard: '弃牌', cixiong: '雌雄选择', guanshi: '贯石斧', guanxing: '观星', liuli: '流离',
+    fanjian: '反间', wuguPick: '五谷取牌', jiedao: '借刀应答', lordSkill: '主公求援', shaAgain: '青龙再杀',
+  };
+  return `${waitingName.value} 正在${KIND[p.kind] ?? '行动'}…`;
 });
 const waitingName = computed(() => {
   const p = view.value.pending;
@@ -478,8 +564,8 @@ const fangtianEligible = computed(() => {
   return (me.value?.hand.length ?? 0) === 1;
 });
 
-const myGeneralState = computed(() => state.players[humanId.value]!);
-const mySkills = computed(() => GENERAL_SKILLS[myGeneral.value]);
+const myGeneralState = computed(() => state.players[Math.max(0, humanId.value)]!);
+const mySkills = computed(() => (spectate.value ? [] : GENERAL_SKILLS[myGeneral.value]));
 
 /** 当前武将可当【杀】用的非杀牌（武圣红牌/龙胆闪）；满血时桃也算武圣素材 */
 function altShaMaterial(): Card | undefined {
@@ -900,15 +986,27 @@ function disp(sub: CardSub): string {
 }
 
 /** 回放：从 setup(seed) 重演前 k 个动作（ADR-0005） */
+/** 回放跳转（M15 起支持拖动）：从 setup(seed) 重演 k 个动作；k 为 null = 退出回放 */
+const replayInput = ref<number | null>(null);
 function showReplay(k: number | null) {
   replayIdx.value = k;
+  replayInput.value = k;
   if (k == null) {
     refresh();
     return;
   }
+  // 从当前位置向目标位置移动时，优先"就近重演"：向后跳直接续着现有快照走，
+  // 只有向前跳（或退出回来）才从 setup 重来——O(步数) 的代价因此只在必要时付（ADR-0005）
   let s = setup(seed.value);
   for (let i = 0; i < k; i++) s = step(s, state.actionLog[i]!);
   view.value = viewOf(s, humanId.value);
+}
+
+/** 回放进度条拖动：数字输入即时跳转（越界钳制） */
+function onReplaySeek() {
+  const v = Number(replayInput.value ?? 0);
+  if (!Number.isFinite(v)) return;
+  showReplay(Math.max(0, Math.min(replayTotal.value, Math.floor(v))));
 }
 
 // —— 手牌排序 FLIP（ADR-0009）：类型分组（基本→锦囊→装备）+ 花色点数 ——
@@ -1028,16 +1126,36 @@ function evText(e: GameEvent): string {
 <template>
   <div class="app">
     <header>
-      <h1>三国杀单机 <span class="m1">M14</span></h1>
+      <h1>三国杀单机 <span class="m1">M15</span></h1>
       <div class="meta">
-        <span class="seed">seed {{ seed }}</span>
-        <span v-if="me" class="badge" :class="'id-' + me.identity">
-          你的身份：{{ IDENTITY_NAMES[me.identity] }}
+        <span class="seed">
+          seed
+          <input
+            v-model.number="seedInput"
+            class="seed-input"
+            type="number"
+            min="0"
+            title="填入种子后点“按此种子开局”，即可复现同一局"
+          />
         </span>
-        <span v-else class="badge dead-badge">你已阵亡 · 观战中</span>
+        <button class="btn ghost" @click="newGameWithSeed">按此种子开局</button>
+        <span v-if="spectate" class="badge dead-badge">观战中（5 AI 自战）</span>
+        <template v-else>
+          <span v-if="me" class="badge" :class="'id-' + me.identity">
+            你的身份：{{ IDENTITY_NAMES[me.identity] }}
+          </span>
+          <span v-else class="badge dead-badge">你已阵亡 · 观战中</span>
+        </template>
         <button class="btn ghost" @click="showCodex = !showCodex">武将图鉴</button>
         <button class="btn ghost" @click="showStats = !showStats">战绩统计</button>
-        <button class="btn" @click="newGame">新一局</button>
+        <button
+          v-if="saveExists"
+          class="btn ghost"
+          title="从本地存档继续上一局"
+          @click="resumeGame"
+        >继续上局</button>
+        <button class="btn ghost" @click="startSpectate">观战（5 AI）</button>
+        <button class="btn" @click="newGame()">新一局</button>
       </div>
     </header>
 
@@ -1093,7 +1211,24 @@ function evText(e: GameEvent): string {
     <div v-if="view.winner" class="replay-bar">
       <span>回放</span>
       <button class="btn ghost" @click="showReplay(Math.max(0, (replayIdx ?? replayTotal) - 1))">◀</button>
-      <span>{{ replayIdx ?? replayTotal }} / {{ replayTotal }}</span>
+      <input
+        class="replay-seek"
+        type="range"
+        min="0"
+        :max="replayTotal"
+        :value="replayIdx ?? replayTotal"
+        title="拖动跳转到任意时刻"
+        @input="showReplay(Number(($event.target as HTMLInputElement).value))"
+      />
+      <input
+        v-model.number="replayInput"
+        class="replay-num"
+        type="number"
+        min="0"
+        :max="replayTotal"
+        @change="onReplaySeek"
+      />
+      <span class="replay-total">/ {{ replayTotal }}</span>
       <button class="btn ghost" @click="showReplay(Math.min(replayTotal, (replayIdx ?? replayTotal) + 1))">▶</button>
       <button class="btn ghost" @click="showReplay(null)">退出回放</button>
     </div>
@@ -1176,6 +1311,7 @@ function evText(e: GameEvent): string {
 
     <section class="prompt">
       <template v-if="view.winner">对局结束——可用下方回放逐步检视整局。</template>
+      <template v-else-if="spectate">观战中 —— {{ spectateHint }}</template>
       <template v-else-if="pend?.kind === 'play'">
         <template v-if="activeMode">
           【{{ SKILL_INFO[activeMode].display }}】{{ activeModePrompt }}
@@ -1480,6 +1616,15 @@ h1 {
   color: #6b7280;
   font-size: 12px;
 }
+.seed-input {
+  width: 86px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid #3a4250;
+  background: #1b1f27;
+  color: #cfd5df;
+  font-size: 12px;
+}
 .badge {
   padding: 2px 10px;
   border-radius: 10px;
@@ -1548,6 +1693,23 @@ h1 {
   margin: 0 4px;
   color: #e0b050;
   font-size: 12px;
+}
+/* 回放拖动条（M15） */
+.replay-seek {
+  width: 220px;
+  accent-color: #e05555;
+}
+.replay-num {
+  width: 68px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid #3a4250;
+  background: #1b1f27;
+  color: #cfd5df;
+  font-size: 12px;
+}
+.replay-total {
+  color: #6b7280;
 }
 .pid {
   font-size: 12px;
