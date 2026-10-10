@@ -12,7 +12,7 @@ npm run dev        # 开发服务器
 npm run build      # 构建产物到 dist/
 npm run typecheck  # tsc --noEmit
 npm run smoke      # 120 局规则 AI 自战回归（卡牌守恒 + 确定性校验）
-npm run regression # 逐技回归护栏（25 技能覆盖率 + 无懈链 + 构造局面）
+npm run regression # 逐技回归护栏（40 技能覆盖 + 无懈链 + 构造局面）
 ```
 
 ## 当前内容
@@ -45,7 +45,8 @@ npm run regression # 逐技回归护栏（25 技能覆盖率 + 无懈链 + 构�
 ## 测试
 
 - `npm run smoke` — 多局 AI 自战：正常终局、卡牌守恒、同 seed 完全可复现
-- `npm run regression` — 逐技回归：25 技能覆盖率、无懈链奇偶、构造局面（反间窥牌隔离等）
+- `npm run regression` — 逐技回归：40 项技能中 34 项有断言（余 6 项为
+  空城/马术/奇才/护驾/激将/救援，尚待补）、无懈链奇偶、17 项构造局面
 - `scripts/probe-m4.ts` — 技能/装备激活次数探针（`npx tsx scripts/probe-m4.ts 60`）
 - `scripts/probe-belief.ts` — 身份推断准确率（命中/误判/弃权三档）
 - `scripts/probe-friendly.ts` — 同阵营互伤统计（身份推断的效果观测）
