@@ -147,14 +147,22 @@ function playCandidates(s: GameState, playerId: number): Action[] {
       const t = enemies.find(x => hasAnyCard(x) && (c.sub === 'guohe' || !isKongcheng(x)));
       if (t) out.push({ type: 'playTrick', cardId: c.id, targetId: t.id });
     } else if (c.sub === 'shunshou') {
-      const t = enemies.find(x => hasAnyCard(x) && seatDistance(s, playerId, x.id) <= 1);
+      // 谦逊（陆逊）：顺手牵羊对其无效（M16）
+      const t = enemies.find(
+        x => !hasSkill(x, 'qianxun') && hasAnyCard(x) && seatDistance(s, playerId, x.id) <= 1,
+      );
       if (t) out.push({ type: 'playTrick', cardId: c.id, targetId: t.id });
     } else if (c.sub === 'lebusi') {
-      const t = enemies.find(x => !x.judgements.some(j => (j.asSub ?? j.sub) === 'lebusi'));
+      // 谦逊（陆逊）：乐不思蜀对其无效，不能作为候选目标（M16）
+      const t = enemies.find(
+        x => !hasSkill(x, 'qianxun') && !x.judgements.some(j => (j.asSub ?? j.sub) === 'lebusi'),
+      );
       if (t) out.push({ type: 'playTrick', cardId: c.id, targetId: t.id });
     } else if (c.sub === 'bingliang') {
       const t = enemies.find(
-        x => !x.judgements.some(j => (j.asSub ?? j.sub) === 'bingliang') && seatDistance(s, playerId, x.id) <= 1,
+        x =>
+          !x.judgements.some(j => (j.asSub ?? j.sub) === 'bingliang') &&
+          seatDistance(s, playerId, x.id) <= 1, // 奇才（黄月英）让自身无距离限制，此处保守不放宽
       );
       if (t) out.push({ type: 'playTrick', cardId: c.id, targetId: t.id });
     } else if (CARD_INFO[c.sub].kind === 'equip') {

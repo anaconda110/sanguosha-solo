@@ -75,9 +75,10 @@ export type GeneralSub =
   | 'sunshangxiang' | 'diaochan'
   | 'zhugeliang' | 'zhenji'
   | 'dajiao' | 'ganning'
-  | 'machao' | 'sunquan' | 'xiahoudun' | 'liubei' | 'huatuo';
+  | 'machao' | 'sunquan' | 'xiahoudun' | 'liubei' | 'huatuo'
+  | 'zhangliao' | 'xuchu' | 'guojia' | 'huangyueying' | 'lvmeng' | 'luxun';
 
-/** 技能；类型划分：use=用牌转换，trigger=受伤/判定触发，active=主动发动，lock=锁定技 */
+/** 技能；类型划分：use=用牌转换，trigger=受伤/判定触发，active=主动发动，lock=锁定技，lord=主公技 */
 export type SkillSub =
   | 'wusheng' | 'paoxiao' | 'longdan'
   | 'jianxiong' | 'fankui' | 'guicai'
@@ -93,7 +94,8 @@ export type SkillSub =
   | 'rende'
   | 'qingnang' | 'jijiu'
   | 'yingzi' | 'fanjian'
-  | 'hujia' | 'jijiang' | 'jiuyuan';
+  | 'hujia' | 'jijiang' | 'jiuyuan'
+  | 'tuxi' | 'luoyi' | 'tiandu' | 'yiji' | 'jizhi' | 'qicai' | 'keji' | 'qianxun' | 'lianying' | 'jieyin';
 
 export interface SkillInfo {
   display: string;
@@ -132,6 +134,16 @@ export const SKILL_INFO: Record<SkillSub, SkillInfo> = {
   hujia: { display: '护驾', kind: 'lord', desc: '主公技，当你需要使用或打出一张【闪】时，你可以令一名其他魏势力角色打出一张【闪】（视为由你打出）' },
   jijiang: { display: '激将', kind: 'lord', desc: '主公技，当你需要使用或打出一张【杀】时，你可以令一名其他蜀势力角色打出一张【杀】（视为由你打出）' },
   jiuyuan: { display: '救援', kind: 'lord', desc: '主公技，其他吴势力角色对你使用【桃】时，你额外回复1点体力' },
+  tuxi: { display: '突袭', kind: 'trigger', desc: '摸牌阶段，你可以放弃摸牌，改为获得至多两名其他角色的各一张手牌' },
+  luoyi: { display: '裸衣', kind: 'trigger', desc: '摸牌阶段，你可以少摸一张牌；若如此做，本回合你使用【杀】或【决斗】造成的伤害+1' },
+  tiandu: { display: '天妒', kind: 'trigger', desc: '你的判定牌生效后，你可以获得之' },
+  yiji: { display: '遗计', kind: 'trigger', desc: '你每受到1点伤害后，可以摸两张牌，然后将其中任意张交给任意角色' },
+  jizhi: { display: '集智', kind: 'trigger', desc: '当你使用非延时锦囊牌时，你可以摸一张牌' },
+  qicai: { display: '奇才', kind: 'lock', desc: '锁定技，你使用锦囊牌无距离限制' },
+  keji: { display: '克己', kind: 'lock', desc: '若你未于出牌阶段使用或打出过【杀】，你可以跳过弃牌阶段' },
+  qianxun: { display: '谦逊', kind: 'lock', desc: '锁定技，你不能成为【顺手牵羊】和【乐不思蜀】的目标' },
+  lianying: { display: '连营', kind: 'trigger', desc: '当你失去最后一张手牌时，你可以摸一张牌' },
+  jieyin: { display: '结姻', kind: 'active', desc: '出牌阶段限一次，你可以弃置两张手牌并选择一名已受伤的男性角色，你与其各回复1点体力' },
 };
 
 /** 性别（雌雄双股剑 / 离间依赖） */
@@ -143,6 +155,7 @@ export const GENERAL_SEX: Record<GeneralSub, Sex> = {
   zhugeliang: 'm', zhenji: 'f',
   dajiao: 'f', ganning: 'm',
   machao: 'm', sunquan: 'm', xiahoudun: 'm', liubei: 'm', huatuo: 'm',
+  zhangliao: 'm', xuchu: 'm', guojia: 'm', huangyueying: 'f', lvmeng: 'm', luxun: 'm',
 };
 
 /** 势力（主公技依赖）：魏/蜀/吴/群 */
@@ -150,9 +163,9 @@ export type Faction = 'wei' | 'shu' | 'wu' | 'qun';
 export const FACTION_NAMES: Record<Faction, string> = { wei: '魏', shu: '蜀', wu: '吴', qun: '群' };
 export const GENERAL_FACTION: Record<GeneralSub, Faction> = {
   baiban: 'qun',
-  caocao: 'wei', simayi: 'wei', xiahoudun: 'wei',
-  liubei: 'shu', guanyu: 'shu', zhangfei: 'shu', zhaoyun: 'shu', zhugeliang: 'shu', machao: 'shu',
-  sunquan: 'wu', zhouyu: 'wu', huanggai: 'wu', sunshangxiang: 'wu', dajiao: 'wu', ganning: 'wu',
+  caocao: 'wei', simayi: 'wei', xiahoudun: 'wei', zhangliao: 'wei', xuchu: 'wei', guojia: 'wei',
+  liubei: 'shu', guanyu: 'shu', zhangfei: 'shu', zhaoyun: 'shu', zhugeliang: 'shu', machao: 'shu', huangyueying: 'shu',
+  sunquan: 'wu', zhouyu: 'wu', huanggai: 'wu', sunshangxiang: 'wu', dajiao: 'wu', ganning: 'wu', lvmeng: 'wu', luxun: 'wu',
   diaochan: 'qun', lvbu: 'qun', zhenji: 'qun', huatuo: 'qun',
 };
 
@@ -166,7 +179,7 @@ export const GENERAL_SKILLS: Record<GeneralSub, SkillSub[]> = {
   huanggai: ['kurou'],
   zhouyu: ['yingzi', 'fanjian'],
   lvbu: ['wushuang'],
-  sunshangxiang: ['xiaoji'],
+  sunshangxiang: ['xiaoji', 'jieyin'],
   diaochan: ['lijian', 'biyue'],
   zhugeliang: ['guanxing', 'kongcheng'],
   zhenji: ['luoshen', 'qingguo'],
@@ -177,6 +190,12 @@ export const GENERAL_SKILLS: Record<GeneralSub, SkillSub[]> = {
   xiahoudun: ['ganglie'],
   liubei: ['rende', 'jijiang'],
   huatuo: ['qingnang', 'jijiu'],
+  zhangliao: ['tuxi'],
+  xuchu: ['luoyi'],
+  guojia: ['tiandu', 'yiji'],
+  huangyueying: ['jizhi', 'qicai'],
+  lvmeng: ['keji'],
+  luxun: ['qianxun', 'lianying'],
 };
 
 export const GENERAL_INFO: Record<GeneralSub, { display: string; skill: string }> = Object.fromEntries(
@@ -190,6 +209,7 @@ export const GENERAL_INFO: Record<GeneralSub, { display: string; skill: string }
         zhugeliang: '诸葛亮', zhenji: '甄姬',
         dajiao: '大乔', ganning: '甘宁',
         machao: '马超', sunquan: '孙权', xiahoudun: '夏侯惇', liubei: '刘备', huatuo: '华佗',
+        zhangliao: '张辽', xuchu: '许褚', guojia: '郭嘉', huangyueying: '黄月英', lvmeng: '吕蒙', luxun: '陆逊',
       }[g],
       skill: GENERAL_SKILLS[g].map(s => SKILL_INFO[s].display).join('·'),
     },
@@ -310,7 +330,8 @@ export interface PendingTrigger {
  */
 export interface Inquiry {
   playerId: number;
-  kind: 'play' | 'respondShan' | 'respondSha' | 'respondWuxie' | 'respondTao' | 'shaAgain' | 'pickCard' | 'trigger' | 'skillCard' | 'discard' | 'cixiong' | 'guanshi' | 'guanxing' | 'liuli' | 'fanjian' | 'wuguPick' | 'jiedao' | 'lordSkill';
+  kind: 'play' | 'respondShan' | 'respondSha' | 'respondWuxie' | 'respondTao' | 'shaAgain' | 'pickCard' | 'trigger' | 'skillCard' | 'discard' | 'cixiong' | 'guanshi' | 'guanxing' | 'liuli' | 'fanjian' | 'wuguPick' | 'jiedao' | 'lordSkill'
+  | 'drawPhase' | 'tuxi' | 'yiji';
   /** respondShan/respondTao：杀的来源（结算奖惩用） */
   shaSourceId?: number;
   /** respondTao：濒死的玩家 */
@@ -366,6 +387,10 @@ export interface Inquiry {
   /** respondShan/respondSha：应答者是代主公出牌（aidForId = 主公 id）——
    *  牌从应答者手中出，效果归于主公（M14 护驾/激将） */
   aidForId?: number;
+  /** tuxi（张辽·突袭）：可被夺取手牌的其他角色 */
+  tuxiTo?: number[];
+  /** yiji（郭嘉·遗计）：待分配的牌（摸到后逐张决定给谁，剩余留在自己手里） */
+  yijiPool?: Card[];
 }
 
 export type WinSide = 'zhu' | 'fan' | 'nei' | 'draw';
@@ -404,6 +429,9 @@ export type Action =
   | { type: 'respondWugu'; /** 五谷丰登：领取的牌 */ cardId: number }
   | { type: 'respondJiedao'; /** 借刀杀人：打出的杀（null = 交出武器） */ cardId: number | null }
   | { type: 'respondLord'; /** 主公技（护驾/激将）：是否向同势力盟友求助 */ use: boolean }
+  | { type: 'respondDraw'; /** 摸牌阶段抉择（张辽突袭/许褚裸衣） */ skill?: 'tuxi' | 'luoyi' }
+  | { type: 'respondTuxi'; /** 突袭：被夺取手牌的角色（至多两名） */ targetIds: number[] }
+  | { type: 'respondYiji'; /** 遗计：把池中一张牌交给某人（null = 留给自己） */ cardId: number; toId: number | null }
   | { type: 'endPlay' }
   | { type: 'respondShan'; cardId: number | null }
   | { type: 'respondSha'; cardId: number | null }
@@ -438,6 +466,12 @@ export interface GameState {
   judging: boolean;
   skipDraw: boolean;
   skipPlay: boolean;
+  /** 本回合伤害加成（许褚·裸衣：杀/决斗 +1） */
+  damageBonus: number;
+  /** 本回合是否使用或打出过【杀】（吕蒙·克己 用） */
+  shaUsed: boolean;
+  /** 本回合是否已问过摸牌阶段抉择（张辽突袭/许褚裸衣，M16） */
+  drawPhaseAsked: boolean;
   /** 本回合是否已过准备阶段（观星/洛神在准备阶段介入，M7） */
   prepared: boolean;
   /** 本回合已发动过的技能（苦肉等限次技能） */

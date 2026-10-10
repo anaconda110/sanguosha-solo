@@ -163,7 +163,12 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
       // 4. 顺手牵羊（距离 1 内有牌的敌人）
       const ss = first('shunshou');
       if (ss) {
-        const t = enemies().find(id => hasAnyCard(s.players[id]!) && seatDistance(s, playerId, id) <= 1);
+        const t = enemies().find(
+          id =>
+            !hasSkill(s.players[id]!, 'qianxun') && // 谦逊（陆逊）：顺手牵羊对其无效
+            hasAnyCard(s.players[id]!) &&
+            (hasSkill(me, 'qicai') || seatDistance(s, playerId, id) <= 1), // 奇才（黄月英）：锦囊无距离限制
+        );
         if (t != null) return { type: 'playTrick', cardId: ss.id, targetId: t };
       }
       // 5. 过河拆桥（含奇袭：黑色非锦囊牌当拆——天然锦囊不转换，ADR-0014）
@@ -183,14 +188,20 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
           ? hand.find(c => c.suit === '♦' && c.sub !== 'tao' && CARD_INFO[c.sub].kind !== 'trick')
           : undefined);
       if (le) {
-        const t = enemies().find(id => !s.players[id]!.judgements.some(c => (c.asSub ?? c.sub) === 'lebusi'));
+        const t = enemies().find(
+          id =>
+            !hasSkill(s.players[id]!, 'qianxun') && // 谦逊（陆逊）：乐不思蜀对其无效
+            !s.players[id]!.judgements.some(c => (c.asSub ?? c.sub) === 'lebusi'),
+        );
         if (t != null) return { type: 'playTrick', cardId: le.id, targetId: t };
       }
       // 7. 兵粮寸断（距离 1；不重复放置）
       const bl = first('bingliang');
       if (bl) {
         const t = enemies().find(
-          id => !s.players[id]!.judgements.some(c => (c.asSub ?? c.sub) === 'bingliang') && seatDistance(s, playerId, id) <= 1,
+          id =>
+            !s.players[id]!.judgements.some(c => (c.asSub ?? c.sub) === 'bingliang') &&
+            (hasSkill(me, 'qicai') || seatDistance(s, playerId, id) <= 1),
         );
         if (t != null) return { type: 'playTrick', cardId: bl.id, targetId: t };
       }
@@ -216,6 +227,32 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
             sub: 'lijian',
             cardId: cheapest(hand, 1)[0]!.id,
             targetIds: [bySha[0]!, bySha[1]!],
+          };
+        }
+      }
+      // 8.55 结姻（孙尚香）：弃两张手牌与一名受伤男性互奶——手牌≥3 且自己或盟友受伤时值得
+      if (
+        hasSkill(me, 'jieyin') &&
+        !s.usedSkills.includes('jieyin') &&
+        hand.length >= 3 &&
+        (me.hp < me.maxHp || allies().length > 0)
+      ) {
+        const t = [playerId, ...allies(), ...enemies()]
+          .map(id => s.players[id]!)
+          .find(
+            p =>
+              p.alive &&
+              p.id !== playerId &&
+              GENERAL_SEX[p.general] === 'm' &&
+              p.hp < p.maxHp &&
+              (allies().includes(p.id) || me.hp < meP.maxHp),
+          );
+        if (t) {
+          return {
+            type: 'useSkill',
+            sub: 'jieyin',
+            cardIds: cheapest(hand, 2).map(c => c.id),
+            targetIds: [t.id],
           };
         }
       }
@@ -429,6 +466,45 @@ export function ruleAction(s: GameState, playerId: number): Action | null {
     case 'lordSkill':
       // 主公技求援（护驾/激将）：白送的盟友资源，一律同意
       return { type: 'respondLord', use: true };
+    case 'drawPhase': {
+      // 摸牌阶段抉择（M16）：突袭（张辽）优先——手牌是硬资源，且能削弱敌人；
+      // 裸衣（许褚）只在手里已经有杀、且体力充裕（≥3）时换伤害加成。
+      if (hasSkill(me, 'tuxi')) {
+        const to = v.players.filter(p => p.alive && p.id !== playerId && p.handCount > 0);
+        if (to.length > 0) return { type: 'respondDraw', skill: 'tuxi' };
+      }
+      if (hasSkill(me, 'luoyi') && meP.hp >= 3 && hand.some(c => c.sub === 'sha')) {
+        return { type: 'respondDraw', skill: 'luoyi' };
+      }
+      return { type: 'respondDraw' };
+    }
+    case 'tuxi': {
+      // 突袭目标：手牌多的敌人优先（拿走的牌最多），最多两名
+      const foes = enemies().filter(id => (pend.tuxiTo ?? []).includes(id));
+      const targets = [...foes]
+        .sort((a, b) => s.players[b]!.hand.length - s.players[a]!.hand.length)
+        .slice(0, 2);
+      if (targets.length === 0) {
+        const any = [...(pend.tuxiTo ?? [])].sort(
+          (a, b) => s.players[b]!.hand.length - s.players[a]!.hand.length,
+        );
+        return { type: 'respondTuxi', targetIds: any.slice(0, 2) };
+      }
+      return { type: 'respondTuxi', targetIds: targets };
+    }
+    case 'yiji': {
+      // 遗计（郭嘉）：池中的牌优先补给缺血的盟友，剩下的自己留着
+      const pool = pend.yijiPool ?? [];
+      const card = pool[0];
+      if (!card) return { type: 'respondYiji', cardId: -1, toId: null };
+      const woundedAlly = allies()
+        .map(id => s.players[id]!)
+        .filter(p => p.alive && p.hp < p.maxHp)
+        .sort((a, b) => a.hp - b.hp)[0];
+      // 只在自己手牌不紧张时才往外分（遗计摸到的牌本就是补偿）
+      const share = woundedAlly && hand.length <= meP.maxHp ? woundedAlly.id : null;
+      return { type: 'respondYiji', cardId: card.id, toId: share };
+    }
     case 'fanjian': {
       // 反间应答：猜花色。无信息可用时按牌堆构成猜【♥】（桃/杀/闪红牌最多）
       return { type: 'respondFanjian', suit: '♥' };

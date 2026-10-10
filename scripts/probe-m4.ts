@@ -5,6 +5,7 @@ import { ruleAction } from '../src/ai/rule';
 import { setup } from '../src/engine/setup';
 import { hasSkill } from '../src/engine/skills';
 import { step } from '../src/engine/step';
+import { SKILL_INFO } from '../src/engine/types';
 import type { GameState, Inquiry } from '../src/engine/types';
 
 const N = Number(process.argv[2] ?? 40);
@@ -46,7 +47,8 @@ for (let seed = 1; seed <= N; seed++) {
     s = step(s, a);
   }
   for (const e of s.log) {
-    if (e.t === 'skill') bump(`${e.sub}(${{ wusheng: 'use', longdan: 'use', paoxiao: 'lock', jianxiong: 'trigger', fankui: 'trigger', guicai: 'trigger', kurou: 'active', wushuang: 'lock', xiaoji: 'trigger', lijian: 'active', biyue: 'trigger', guanxing: 'active', kongcheng: 'lock', luoshen: 'trigger', qingguo: 'use', guose: 'use', liuli: 'trigger', qixi: 'use', mashu: 'lock', tieji: 'trigger', ganglie: 'trigger', zhiheng: 'active', rende: 'active', qingnang: 'active', jijiu: 'use', yingzi: 'lock', fanjian: 'active', hujia: 'lord', jijiang: 'lord', jiuyuan: 'lord' }[e.sub]})`);
+    // 技能类型直接从 SKILL_INFO 取（此前是硬编码表，每加技能都要手工同步，改掉）
+    if (e.t === 'skill') bump(`${e.sub}(${SKILL_INFO[e.sub].kind})`);
     else if (e.t === 'ability') bump(`ability:${e.sub}`);
     else if (e.t === 'negate') bump('wuxie(negate)');
   }

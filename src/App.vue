@@ -115,10 +115,12 @@ const lijianTargets = ref<number[]>([]);
 /** 观星：点选置顶的牌（顺序即摸取顺序） */
 const guanxingPick = ref<number[]>([]);
 /** 通用主动技多选（M10/M11）：制衡/仁德/青囊/反间——先点技按钮，再点手牌，最后点确认/目标 */
-const activeMode = ref<'zhiheng' | 'rende' | 'qingnang' | 'fanjian' | null>(null);
+const activeMode = ref<'zhiheng' | 'rende' | 'qingnang' | 'fanjian' | 'jieyin' | null>(null);
 const activeSel = ref<number[]>([]);
 /** 流离两步：点一张手牌弃置 → 点要转移给的男性 */
 const liuliPick = ref<Card | null>(null);
+/** 突袭（张辽·M16）：至多两名目标的多选 */
+const tuxiSel = ref<number[]>([]);
 const discardSel = ref<number[]>([]);
 /** 回放进度；null = 实时画面（ADR-0005：seed+动作重演） */
 const replayIdx = ref<number | null>(null);
@@ -365,6 +367,7 @@ function act(a: Action) {
   guanshiSel.value = [];
   guanxingPick.value = [];
   liuliPick.value = null;
+  tuxiSel.value = [];
   activeMode.value = null;
   activeSel.value = [];
   resetLijian();
@@ -392,6 +395,7 @@ function resetUi() {
   guanshiSel.value = [];
   guanxingPick.value = [];
   liuliPick.value = null;
+  tuxiSel.value = [];
   activeMode.value = null;
   activeSel.value = [];
   resetLijian();
@@ -633,6 +637,8 @@ const activeModePrompt = computed(() => {
       return n === 0 ? '点一张手牌作为代价' : '再点一名已受伤的角色';
     case 'fanjian':
       return n === 0 ? '点一张手牌作为展示牌' : '再点一名其他角色，令其猜花色';
+    case 'jieyin':
+      return n < 2 ? `点手牌选择要弃置的两张（已选 ${n} 张）` : '再点一名已受伤的男性角色';
     default:
       return '';
   }
@@ -682,12 +688,20 @@ function isTargetable(pid: number): boolean {
     const t = view.value.players[pid]!;
     return activeSel.value.length === 1 && t.alive && pid !== humanId.value;
   }
+  if (activeMode.value === 'jieyin') {
+    const t = view.value.players[pid]!;
+    return activeSel.value.length === 2 && t.alive && t.sex === 'm' && t.hp < t.maxHp;
+  }
   if (lijianMode.value && lijianCard.value) {
     const t = view.value.players[pid]!;
     return t.alive && t.id !== humanId.value && t.sex === 'm';
   }
   if (pend.value?.kind === 'liuli' && liuliPick.value) {
     return (pend.value.liuliTo ?? []).includes(pid);
+  }
+  if (pend.value?.kind === 'tuxi') {
+    const t = view.value.players[pid]!;
+    return t.alive && pid !== humanId.value && (pend.value.tuxiTo ?? []).includes(pid);
   }
   if (!sel || pend.value?.kind !== 'play') return false;
   const t = view.value.players[pid]!;
@@ -720,6 +734,7 @@ function onCardClick(c: Card) {
       // 制衡/仁德：多选切换；青囊/反间：单选（点新牌替换）
       const i = activeSel.value.indexOf(c.id);
       if (activeMode.value === 'qingnang' || activeMode.value === 'fanjian') activeSel.value = i >= 0 ? [] : [c.id];
+      else if (activeMode.value === 'jieyin' && activeSel.value.length >= 2 && i < 0) return; // 结姻最多两张
       else if (i >= 0) activeSel.value.splice(i, 1);
       else activeSel.value.push(c.id);
       return;
@@ -811,6 +826,12 @@ function onSeatClick(pid: number) {
     act({ type: 'useSkill', sub: 'fanjian', cardId: activeSel.value[0], targetIds: [pid] });
     return;
   }
+  if (activeMode.value === 'jieyin') {
+    const t = view.value.players[pid]!;
+    if (!t.alive || t.sex !== 'm' || t.hp >= t.maxHp || activeSel.value.length !== 2) return;
+    act({ type: 'useSkill', sub: 'jieyin', cardIds: [...activeSel.value], targetIds: [pid] });
+    return;
+  }
   if (lijianMode.value && lijianCard.value) {
     if (!isTargetable(pid)) return;
     lijianSeatClick(pid);
@@ -819,6 +840,14 @@ function onSeatClick(pid: number) {
   if (pend.value?.kind === 'liuli' && liuliPick.value) {
     if (!isTargetable(pid)) return;
     act({ type: 'respondLiuli', cardId: liuliPick.value.id, transferTo: pid });
+    return;
+  }
+  if (pend.value?.kind === 'tuxi') {
+    // 突袭：点选切换（至多两名），「确定」按钮提交
+    if (!isTargetable(pid)) return;
+    const i = tuxiSel.value.indexOf(pid);
+    if (i >= 0) tuxiSel.value.splice(i, 1);
+    else if (tuxiSel.value.length < 2) tuxiSel.value.push(pid);
     return;
   }
   if (!selected.value || pend.value?.kind !== 'play') return;
@@ -1126,7 +1155,7 @@ function evText(e: GameEvent): string {
 <template>
   <div class="app">
     <header>
-      <h1>三国杀单机 <span class="m1">M15</span></h1>
+      <h1>三国杀单机 <span class="m1">M16</span></h1>
       <div class="meta">
         <span class="seed">
           seed
@@ -1383,6 +1412,13 @@ function evText(e: GameEvent): string {
           >
             反间（展示1牌 猜错花色受伤）
           </button>
+          <button
+            v-if="mySkills.includes('jieyin') && !state.usedSkills.includes('jieyin') && (me?.hand.length ?? 0) >= 2"
+            class="btn"
+            @click="activeMode = 'jieyin'; activeSel = []"
+          >
+            结姻（弃2牌 与受伤男性各回1血）
+          </button>
           <button class="btn" @click="act({ type: 'endPlay' })">结束出牌</button>
         </template>
       </template>
@@ -1460,6 +1496,30 @@ function evText(e: GameEvent): string {
           使用【杀】
         </button>
         <button class="btn" @click="act({ type: 'respondJiedao', cardId: null })">交出武器</button>
+      </template>
+      <template v-else-if="pend?.kind === 'drawPhase'">
+        摸牌阶段 —— {{ SKILL_INFO[mySkills.includes('tuxi') ? 'tuxi' : 'luoyi'].display }} 可选：
+        <button v-if="mySkills.includes('tuxi')" class="btn" @click="act({ type: 'respondDraw', skill: 'tuxi' })">
+          突袭（不摸牌，夺至多两人各一张手牌）
+        </button>
+        <button v-if="mySkills.includes('luoyi')" class="btn" @click="act({ type: 'respondDraw', skill: 'luoyi' })">
+          裸衣（少摸1张，本回合杀/决斗伤害+1）
+        </button>
+        <button class="btn ghost" @click="act({ type: 'respondDraw' })">正常摸牌</button>
+      </template>
+      <template v-else-if="pend?.kind === 'tuxi'">
+        【突袭】——点选至多两名目标（他们各被你拿走一张手牌），集齐或点"确定"：
+        （已选 {{ tuxiSel.length }}/2）
+        <button class="btn" @click="act({ type: 'respondTuxi', targetIds: [...tuxiSel] })">确定</button>
+      </template>
+      <template v-else-if="pend?.kind === 'yiji' && pend.yijiPool?.length">
+        【遗计】——把这张牌交给谁？（{{ disp(pend.yijiPool[0]!.sub) }}{{ pend.yijiPool[0]!.suit }}{{ pend.yijiPool[0]!.rank }}，剩 {{ pend.yijiPool.length }} 张）
+        <button
+          v-for="p in view.players.filter(x => x.alive)"
+          :key="p.id"
+          class="btn"
+          @click="act({ type: 'respondYiji', cardId: pend.yijiPool![0]!.id, toId: p.id })"
+        >{{ p.id === humanId ? '自己留着' : p.name }}</button>
       </template>
       <template v-else-if="pend?.kind === 'lordSkill'">
         <template v-if="pend.lordPend?.aidForId != null">
