@@ -367,13 +367,17 @@ async function scheduleAi() {
     const a = await askAi(pid);
     thinking.value = false;
     if (gid !== gameId || state.winner || !state.pending || state.pending.playerId !== pid) return;
-    if (!a) return;
+    if (!a) {
+      console.error('aiAction 返回 null：AI 链中止', pid, state.pending.kind);
+      return;
+    }
     try {
       applyStep(a);
     } catch (e) {
       console.error('applyStep 异常（AI 链继续）:', e); // 演出层故障不杀 AI 链（M19 修复）
     }
-    void scheduleAi();
+    void scheduleAi(); // 递归调度：AI 回合结束后安排下一步（M20 编辑曾误删致全局冻结）
+
   }, (spectate.value ? 700 : 550) / settings.value.speed);
 }
 function refresh() {
@@ -546,14 +550,89 @@ function dismissIntro() {
 // —— 设置（M18）：音效 / 动画节奏 / AI 难度 ——
 const settings = ref<Settings>(loadSettings());
 const showSettings = ref(false);
+/** 临时调试开关（?debug 或三击标题；M20 交互排查用） */
+const showDebug = ref(new URLSearchParams(location.search).has('debug'));
 function updateSettings(patch: Partial<Settings>) {
   settings.value = { ...settings.value, ...patch };
   saveSettings(settings.value);
   configureSound(settings.value.soundOn, settings.value.volume);
-void scheduleAi(); // 初始调度必须在 settings 之后(M19:TDZ 曾致首回合 AI 冻结)
 }
-configureSound(settings.value.soundOn, settings.value.volume);
+
+// —— 交互性强化（M20）：悬停说明 / 目标反馈 / 拖拽出牌 / 详情面板 / 动画跳过 ——
+
+/** 悬停的手牌（底部说明条内容） */
+const hoverCard = ref<Card | null>(null);
+
+/** 悬停的座次 + 详情面板位置（跟随鼠标） */
+const hoverSeat = ref<number | null>(null);
+const seatTipPos = ref({ x: 0, y: 0 });
+function seatHoverEnter(pid: number, ev: MouseEvent) {
+  hoverSeat.value = pid;
+  seatTipPos.value = { x: ev.clientX + 14, y: ev.clientY + 10 };
+}
+function seatHoverMove(ev: MouseEvent) {
+  if (hoverSeat.value == null) return;
+  seatTipPos.value = { x: ev.clientX + 14, y: ev.clientY + 10 };
+}
+function seatHoverLeave() {
+  hoverSeat.value = null;
+}
+
+/** 拖拽出牌：按下手牌拖到可目标座次松手即出；点击选牌行为不变 */
+const drag = ref<{ card: Card; active: boolean; x: number; y: number; over: number | null } | null>(null);
+let dragStart = { x: 0, y: 0 };
+function cardPointerDown(c: Card, ev: PointerEvent) {
+  if (pend.value?.kind !== 'play' || spectate.value) return;
+  dragStart = { x: ev.clientX, y: ev.clientY };
+  drag.value = { card: c, active: false, x: ev.clientX, y: ev.clientY, over: null };
+  window.addEventListener('pointermove', cardDragMove);
+  window.addEventListener('pointerup', cardDragUp, { once: true });
+}
+function cardDragMove(ev: PointerEvent) {
+  const d = drag.value;
+  if (!d) return;
+  if (!d.active && Math.hypot(ev.clientX - dragStart.x, ev.clientY - dragStart.y) > 10) d.active = true;
+  if (!d.active) return;
+  d.x = ev.clientX;
+  d.y = ev.clientY;
+  const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.seat');
+  d.over = el ? Number((el as HTMLElement).dataset.pid) || null : null;
+}
+function cardDragUp(ev: PointerEvent) {
+  window.removeEventListener('pointermove', cardDragMove);
+  const d = drag.value;
+  drag.value = null;
+  if (!d) return;
+  if (d.active && d.over != null && isTargetable(d.over)) {
+    clickSuppressed = true; // 拖拽后的 click 不再触发选牌
+    onSeatClick(d.over);
+    setTimeout(() => (clickSuppressed = false), 0);
+  }
+}
+
+/** 动画跳过：点桌面空白处立即结算所有待播演出（M20） */
+const animTimers: number[] = [];
+function skipAnimations() {
+  for (const id of animTimers.splice(0)) clearTimeout(id);
+  animIdx = state.log.length;
+  arrows.value = [];
+  floats.value = [];
+  flashes.value = [];
+}
+
+/** 是否处于"点了牌等目标"状态：高亮可选目标、置灰其余座次（M20） */
+let clickSuppressed = false; // 拖拽结束后紧随的 click 需吞掉
+
+const targetingMode = computed(
+  () =>
+    !spectate.value &&
+    ((pend.value?.kind === 'play' && (!!selected.value || !!activeMode.value)) ||
+      pend.value?.kind === 'tuxi' ||
+      (pend.value?.kind === 'liuli' && !!liuliPick.value)),
+);
 void scheduleAi(); // 初始调度必须在 settings 之后(M19:TDZ 曾致首回合 AI 冻结)
+configureSound(settings.value.soundOn, settings.value.volume);
+
 /** 战绩统计面板（M9）：批量规则 AI 自战 */
 const showStats = ref(false);
 const batchRunning = ref(false);
@@ -787,6 +866,10 @@ function isTargetable(pid: number): boolean {
 
 /** 出牌阶段的卡牌点击语义 */
 function onCardClick(c: Card) {
+  if (clickSuppressed) {
+    clickSuppressed = false;
+    return;
+  }
   if (pend.value?.kind === 'play') {
     if (lijianMode.value) {
       if (!lijianCard.value) lijianCard.value = c; // 第一步：选弃置的手牌
@@ -1369,7 +1452,7 @@ function evText(e: GameEvent): string {
       <button class="btn ghost" @click="showReplay(null)">退出回放</button>
     </div>
 
-    <section class="table" ref="seatsBox">
+    <section class="table" ref="seatsBox" title="点空白处可跳过动画" @click.self="skipAnimations">
       <svg v-if="arrows.length" class="arrow-layer">
         <defs>
           <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
@@ -1391,6 +1474,7 @@ function evText(e: GameEvent): string {
         v-for="p in orderedPlayers"
         :key="p.id"
         :ref="el => { seatEls[p.id] = el as HTMLElement | null; }"
+        :data-pid="p.id"
         class="seat"
         :class="[
           'pos-' + seatPos[p.id],
@@ -1399,11 +1483,16 @@ function evText(e: GameEvent): string {
             turn: p.id === view.players[view.turnIdx]!.id && !view.winner,
             dead: !p.alive,
             targetable: isTargetable(p.id),
+            dimmed: targetingMode && !isTargetable(p.id),
+            'drag-over': drag?.active && drag.over === p.id,
             'flash-dmg': flashesFor(p.id).some(f => f.kind === 'dmg'),
             'flash-dying': flashesFor(p.id).some(f => f.kind === 'dying'),
           },
         ]"
         @click="onSeatClick(p.id)"
+        @mouseenter="seatHoverEnter(p.id, $event)"
+        @mousemove="seatHoverMove($event)"
+        @mouseleave="seatHoverLeave()"
       >
         <div class="phead">
           <img
@@ -1446,6 +1535,12 @@ function evText(e: GameEvent): string {
     </section>
 
     <section class="prompt">
+      <div v-if="showDebug" style="font-size:11px;color:#e05555">
+        DEBUG humanId={{ humanId }} spectate={{ spectate }} pend={{ pend ? pend.kind + '@' + pend.playerId : 'null' }}
+        viewPending={{ view.pending ? view.pending.kind + '@' + view.pending.playerId : 'null' }}
+        meAlive={{ !!view.me }} winner={{ !!view.winner }}
+        <button class="btn ghost" @click="showDebug = false">关</button>
+      </div>
       <template v-if="view.winner">对局结束——可用下方回放逐步检视整局。</template>
       <template v-else-if="spectate">观战中 —— {{ spectateHint }}</template>
       <template v-else-if="pend?.kind === 'play'">
@@ -1717,14 +1812,56 @@ function evText(e: GameEvent): string {
       <template v-else>等待 {{ waitingName }} 行动…</template>
     </section>
 
+    <div v-if="hoverCard && CARD_INFO[hoverCard.sub].desc" class="card-tip">
+      <div class="card-tip-head">
+        【{{ CARD_INFO[hoverCard.sub].display }}】
+        <span class="card-tip-sub">{{ hoverCard.suit }}{{ hoverCard.rank }} · {{ CARD_INFO[hoverCard.sub].kind === 'basic' ? '基本牌' : CARD_INFO[hoverCard.sub].kind === 'trick' ? '锦囊牌' : '装备牌' }}{{ CARD_INFO[hoverCard.sub].range ? '·射程' + CARD_INFO[hoverCard.sub].range : '' }}</span>
+      </div>
+      <div class="card-tip-desc">{{ CARD_INFO[hoverCard.sub].desc }}</div>
+    </div>
+
+    <div
+      v-if="hoverSeat != null && view.players[hoverSeat]"
+      class="seat-tip"
+      :style="{ left: seatTipPos.x + 'px', top: seatTipPos.y + 'px' }"
+    >
+      <div class="seat-tip-name">
+        {{ view.players[hoverSeat].name }}（{{ view.players[hoverSeat].handCount }} 手牌）
+        <span v-if="view.players[hoverSeat].isZhu">主公</span>
+      </div>
+      <div class="seat-tip-row" v-if="Object.keys(view.players[hoverSeat].equipSlots).length">
+        装备：<span v-for="(sub, slot) in view.players[hoverSeat].equipSlots" :key="slot">【{{ disp(sub) }}】</span>
+      </div>
+      <div class="seat-tip-row" v-else>装备：无</div>
+      <div class="seat-tip-row" v-if="view.players[hoverSeat].judgements.length">
+        判定区：<span v-for="j in view.players[hoverSeat].judgements" :key="j">【{{ disp(j) }}】</span>
+      </div>
+      <div class="seat-tip-row seat-tip-skills" v-if="GENERAL_SKILLS[view.players[hoverSeat].general].length">
+        <span v-for="sk in GENERAL_SKILLS[view.players[hoverSeat].general]" :key="sk">
+          <b>【{{ SKILL_INFO[sk].display }}】</b>{{ SKILL_INFO[sk].desc }}
+        </span>
+      </div>
+    </div>
+
     <section class="hand">
       <div
         v-for="c in handSorted"
         :key="c.id"
         :data-cid="c.id"
         class="card"
-        :class="[c.sub, CARD_INFO[c.sub].kind, { selected: selected?.cardId === c.id || selected2?.id === c.id || discardSel.includes(c.id) || guanshiSel.includes(c.id) || activeSel.includes(c.id) || guanxingPick.includes(c.id) || lijianCard?.id === c.id, clickable: !!pend }]"
+        :class="[
+          c.sub,
+          CARD_INFO[c.sub].kind,
+          {
+            selected: selected?.cardId === c.id || selected2?.id === c.id || discardSel.includes(c.id) || guanshiSel.includes(c.id) || activeSel.includes(c.id) || guanxingPick.includes(c.id) || lijianCard?.id === c.id,
+            clickable: !!pend,
+            dragging: drag?.card.id === c.id && drag.active,
+          },
+        ]"
         @click="onCardClick(c)"
+        @pointerdown="cardPointerDown(c, $event)"
+        @mouseenter="hoverCard = c"
+        @mouseleave="hoverCard = null"
       >
         <div class="cname" :class="{ long: disp(c.sub).length > 2 }">{{ disp(c.sub) }}</div>
         <div class="csuit">{{ c.suit }}{{ c.rank }}</div>
@@ -1982,6 +2119,98 @@ h1 {
   color: #e5b567;
   font-weight: bold;
 }
+/* —— 交互性强化（M20）—— */
+.card:hover {
+  transform: translateY(-14px) scale(1.08);
+  z-index: 5;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+.card.dragging {
+  opacity: 0.85;
+  transform: scale(1.12) rotate(3deg);
+  z-index: 50;
+  cursor: grabbing;
+}
+.seat.dimmed {
+  opacity: 0.35;
+  filter: grayscale(0.8);
+  pointer-events: none;
+}
+.seat.targetable {
+  box-shadow: 0 0 0 2px #58c470, 0 0 14px rgba(88, 196, 112, 0.55);
+  cursor: crosshair;
+}
+.seat.drag-over {
+  box-shadow: 0 0 0 3px #e8c268, 0 0 20px rgba(232, 194, 104, 0.7);
+  transform: scale(1.04);
+}
+.card-tip {
+  position: fixed;
+  left: 50%;
+  bottom: 172px;
+  transform: translateX(-50%);
+  max-width: 560px;
+  background: #14171e;
+  border: 1px solid #3a4250;
+  border-radius: 10px;
+  padding: 10px 14px;
+  z-index: 40;
+  pointer-events: none;
+}
+.card-tip-head {
+  font-size: 13px;
+  color: #e8c268;
+  margin-bottom: 4px;
+}
+.card-tip-sub {
+  color: #8b93a3;
+  font-size: 12px;
+}
+.card-tip-desc {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #cfd5df;
+}
+.seat-tip {
+  position: fixed;
+  z-index: 60;
+  width: 300px;
+  background: #14171e;
+  border: 1px solid #3a4250;
+  border-radius: 10px;
+  padding: 10px 12px;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+}
+.seat-tip-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8c268;
+  margin-bottom: 6px;
+}
+.seat-tip-row {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #cfd5df;
+  border-top: 1px dashed #2a3140;
+  padding-top: 5px;
+  margin-top: 5px;
+}
+.seat-tip-row:first-of-type {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
+}
+.seat-tip-skills span {
+  display: block;
+  margin-bottom: 3px;
+  color: #9aa3b2;
+}
+.seat-tip-skills b {
+  color: #cfd5df;
+}
+
 .card {
   position: relative;
 }
