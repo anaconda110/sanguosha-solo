@@ -38,11 +38,13 @@ npm run regression # 逐技回归护栏（40 技能覆盖 + 无懈链 + 构造�
   回放拖动跳转（ADR-0021）、**新手引导**（首次进入五条要点，ADR-0023）。
 - **发布闭环**（ADR-0023）：GitHub Actions CI（push/PR 自动跑 typecheck + smoke
   + regression + build）、GitHub Pages 自动部署（`https://anaconda110.github.io/sanguosha-solo/`）。
+- **体验件**（ADR-0024）：**AI 难度分级**（简单=规则表 / 普通=蒙特卡洛）、
+  程序合成音效（WebAudio 零素材）、设置面板（音效/音量/动画节奏，存本地）。
 
 ## 文档
 
 - [CONTEXT.md](CONTEXT.md) — 领域术语表（结算栈/时序点/确定性化/选牌……）
-- [docs/adr/](docs/adr/) — 23 篇架构决策记录（ADR-0001~0023），每篇含"已知简化"
+- [docs/adr/](docs/adr/) — 24 篇架构决策记录（ADR-0001~0024），每篇含"已知简化"
 
 ## 测试
 

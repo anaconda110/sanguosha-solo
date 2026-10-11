@@ -7,6 +7,8 @@ import { CARD_INFO, GENERAL_INFO, GENERAL_SEX, GENERAL_SKILLS, IDENTITY_NAMES, S
 import type { Action, Card, CardKind, CardSub, EquipSlot, GameEvent, GeneralSub, Phase, SkillSub, Suit, WinSide } from './engine/types';
 import { viewOf } from './engine/view';
 import { clearSave, hasSave, loadSave, saveGame } from './persist';
+import { loadSettings, saveSettings, type Settings } from './settings';
+import { configureSound, playSound, type SoundKind } from './sound';
 import { emptyBatch, runOneGame } from './stats';
 
 function randomSeed() {
@@ -177,6 +179,33 @@ function spawnFlash(playerId: number, kind: string) {
 }
 
 /** 把 [fromIdx, now) 的新事件映射为动画；批内按 260ms 逐个错开，读出先后感 */
+function eventSound(e: GameEvent): SoundKind | null {
+  switch (e.t) {
+    case 'playCard':
+    case 'respond':
+      return e.t === 'respond' && e.card == null ? null : 'card';
+    case 'draw':
+      return 'draw';
+    case 'damage':
+      return 'damage';
+    case 'heal':
+      return 'heal';
+    case 'dying':
+      return 'dying';
+    case 'negate':
+      return 'negate';
+    case 'judge':
+    case 'judgeModify':
+      return 'judge';
+    case 'equip':
+    case 'unequip':
+      return 'equip';
+    case 'gameOver':
+      return 'gameover';
+    default:
+      return null;
+  }
+}
 function enqueueAnimations(fromIdx: number) {
   if (replayIdx.value != null) {
     animIdx = state.log.length; // 回放不演出
@@ -184,7 +213,8 @@ function enqueueAnimations(fromIdx: number) {
   }
   const news = state.log.slice(fromIdx);
   news.forEach((e, i) => {
-    const delay = i * 260;
+    const delay = i * 260 / settings.speed; // 动画节奏随设置倍率（M18）
+    playSound(eventSound(e), delay / 1000); // 音效与动画同拍（M18）
     switch (e.t) {
       case 'playCard': {
         const name = CARD_INFO[e.card].display;
@@ -298,8 +328,9 @@ let aiSeq = 0;
 
 function askAi(playerId: number): Promise<Action | null> {
   return new Promise(resolve => {
+    const difficulty = settings.value.difficulty;
     if (!aiWorker) {
-      resolve(aiAction(state, playerId)); // 同步回退：冻结回归但游戏不死
+      resolve(aiAction(state, playerId, difficulty)); // 同步回退：冻结回归但游戏不死
       return;
     }
     const requestId = ++aiSeq;
@@ -316,11 +347,11 @@ function askAi(playerId: number): Promise<Action | null> {
       finish(e.data.action ?? null);
     };
     // Worker 挂死保险丝：15s 未响应则回退主线程同步计算（迟到的响应被忽略）
-    const timer = setTimeout(() => finish(aiAction(state, playerId)), 15000);
+    const timer = setTimeout(() => finish(aiAction(state, playerId, difficulty)), 15000);
     aiWorker.addEventListener('message', onMsg);
     // 快照剥离日志：Worker 端仿真不读日志，避免大日志的克隆开销
     const snapshot = { ...state, log: [], actionLog: [] };
-    aiWorker.postMessage({ state: snapshot, playerId, requestId });
+    aiWorker.postMessage({ state: snapshot, playerId, requestId, difficulty });
   });
 }
 
@@ -339,7 +370,7 @@ async function scheduleAi() {
     if (!a) return;
     applyStep(a);
     void scheduleAi();
-  }, spectate.value ? 700 : 550);
+  }, (spectate.value ? 700 : 550) / settings.value.speed);
 }
 void scheduleAi();
 
@@ -509,6 +540,16 @@ function dismissIntro() {
     /* 忽略 */
   }
 }
+
+// —— 设置（M18）：音效 / 动画节奏 / AI 难度 ——
+const settings = ref<Settings>(loadSettings());
+const showSettings = ref(false);
+function updateSettings(patch: Partial<Settings>) {
+  settings.value = { ...settings.value, ...patch };
+  saveSettings(settings.value);
+  configureSound(settings.value.soundOn, settings.value.volume);
+}
+configureSound(settings.value.soundOn, settings.value.volume);
 /** 战绩统计面板（M9）：批量规则 AI 自战 */
 const showStats = ref(false);
 const batchRunning = ref(false);
@@ -1186,7 +1227,7 @@ function evText(e: GameEvent): string {
       </div>
     </div>
     <header>
-      <h1>三国杀单机 <span class="m1">M16</span></h1>
+      <h1>三国杀单机 <span class="m1">M18</span></h1>
       <div class="meta">
         <span class="seed">
           seed
@@ -1208,6 +1249,7 @@ function evText(e: GameEvent): string {
         </template>
         <button class="btn ghost" @click="showCodex = !showCodex">武将图鉴</button>
         <button class="btn ghost" @click="showStats = !showStats">战绩统计</button>
+        <button class="btn ghost" @click="showSettings = !showSettings">设置</button>
         <button
           v-if="saveExists"
           class="btn ghost"
@@ -1218,6 +1260,36 @@ function evText(e: GameEvent): string {
         <button class="btn" @click="newGame()">新一局</button>
       </div>
     </header>
+
+    <section v-if="showSettings" class="codex settings-panel">
+      <div class="settings-grid">
+        <label>AI 难度</label>
+        <select :value="settings.difficulty" @change="updateSettings({ difficulty: ($event.target as HTMLSelectElement).value as Settings['difficulty'] })">
+          <option value="easy">简单（规则型 AI，响应快）</option>
+          <option value="normal">普通（首个出牌决策走蒙特卡洛）</option>
+        </select>
+        <label>音效</label>
+        <label class="settings-inline">
+          <input type="checkbox" :checked="settings.soundOn" @change="updateSettings({ soundOn: ($event.target as HTMLInputElement).checked })" />
+          {{ settings.soundOn ? '开' : '关' }}
+        </label>
+        <label>音量</label>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          :value="Math.round(settings.volume * 100)"
+          @input="updateSettings({ volume: Number(($event.target as HTMLInputElement).value) / 100 })"
+        />
+        <label>动画节奏</label>
+        <select :value="settings.speed" @change="updateSettings({ speed: Number(($event.target as HTMLSelectElement).value) })">
+          <option :value="1">原速</option>
+          <option :value="1.5">1.5 倍</option>
+          <option :value="2">2 倍（快进）</option>
+        </select>
+      </div>
+      <p class="settings-tip">难度与节奏即时生效；音效试听：出一张牌即可。设置存本地，与对局存档相互独立。</p>
+    </section>
 
     <section v-if="showStats" class="codex stats-panel">
       <div class="stats-head">
@@ -1673,6 +1745,42 @@ body {
   color: #d8dee9;
   font-family: 'Microsoft YaHei', system-ui, sans-serif;
 }
+/* 设置面板（M18） */
+.settings-panel {
+  margin-bottom: 12px;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 10px 14px;
+  align-items: center;
+  font-size: 13px;
+}
+.settings-grid label {
+  color: #9aa3b2;
+}
+.settings-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-tip {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: #6b7280;
+}
+.settings-grid select,
+.settings-grid input[type='range'] {
+  accent-color: #e05555;
+}
+.settings-grid select {
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid #3a4250;
+  background: #1b1f27;
+  color: #cfd5df;
+}
+
 /* 新手引导覆盖层（M17） */
 .intro-overlay {
   position: fixed;

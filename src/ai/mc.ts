@@ -13,9 +13,10 @@ const ROLLOUT_CAP = 150; // rollout 步数上限，超出按部分局面评估
 const MAX_CANDIDATES = 4; // 候选上限（含结束出牌）；ADR-0006 上限 6 的收紧实现
 
 /** AI 统一入口：仅回合首个出牌决策走 MC（ADR-0006 第 1 条），其余沿用规则策略 */
-export function aiAction(s: GameState, playerId: number): Action | null {
+/** AI 统一入口：normal 档在回合首个出牌决策走蒙特卡洛（ADR-0006），easy 档只用规则表（M18 难度分级） */
+export function aiAction(s: GameState, playerId: number, difficulty: 'easy' | 'normal' = 'normal'): Action | null {
   const pend = s.pending!;
-  if (pend.kind === 'play' && s.turnPlays === 0) {
+  if (difficulty === 'normal' && pend.kind === 'play' && s.turnPlays === 0) {
     const cands = playCandidates(s, playerId);
     if (cands.length > 1) return mcPick(s, playerId, cands);
   }
