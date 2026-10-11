@@ -1,6 +1,9 @@
 // 引擎核心（ADR-0002/0004/0005/0010）：step(state, action) → 新状态，纯函数推进。
 // 自动流转集中在 advance()：触发队列 → 判定链（鬼才）→ 结算栈 → 阶段机；
 // 推进到需要玩家决策时以 pending 停下。濒死求桃是全局打断，不触碰帧。
+// 武将技按"技能即模块"拆在 skills/（钩子注册表，ADR-0026）：本文件在既定切入点
+// 调用 skills/index.ts 的聚合分派，内部原语经 OPS 注入技能模块（无循环依赖）。
+// 主公技求援流程、无双的帧内计数与武器/防具效果是与帧栈/装备强耦合的框架机械，留在这里。
 import { randU32, shuffleInPlace } from './rng';
 import { TOTAL_CARDS } from './cards';
 import { CARD_INFO, GENERAL_FACTION, GENERAL_SEX } from './types';
@@ -13,6 +16,27 @@ import {
   isKongcheng,
   isRedCard,
 } from './skills';
+import {
+  PENDING_HOOKS,
+  skillCanSaveTao,
+  skillDrawCountBonus,
+  skillDrawPhaseAsk,
+  skillDrawPhaseChoice,
+  skillJudgeAskSub,
+  skillJudgeCardGain,
+  skillModifyShaDamage,
+  skillOnDamaged,
+  skillOnEquipLost,
+  skillOnLastHandLost,
+  skillOnTrickPlayed,
+  skillOnTurnEnd,
+  skillPreparePhase,
+  skillReplaceJudgeCard,
+  skillSkipDiscard,
+  skillTaoExtraHeal,
+  SKILL_HOOKS,
+} from './skills';
+import type { SkillCtx, SkillOps } from './skill-runtime';
 import type {
   Action,
   Card,
@@ -33,6 +57,25 @@ export { TOTAL_CARDS };
 
 /** 回合上限：合法最长局远低于此（观测最长 4126 步）；超限强制平局防 AI 死守（ADR-0007） */
 export const MAX_TURNS = 5000;
+
+// —— 技能钩子（ADR-0026）：step.ts 原语经 ops 注入技能模块，模块对 step.ts 零依赖 ——
+const OPS: SkillOps = {
+  dealDamage,
+  hurt,
+  drawCards,
+  reshuffleIfNeeded,
+  drawJudgeCard,
+  beginJudge,
+  queueTrigger,
+  drawPhaseDefault,
+  othersInOrder,
+  seatDistance,
+  hasAnyCard,
+  askSkillPick,
+  removeFromHand,
+  shaHit,
+  makeTrickFrame,
+};
 
 export function step(prev: GameState, action: Action): GameState {
   if (prev.winner) throw new Error('游戏已结束');
@@ -221,63 +264,10 @@ function validate(s: GameState, pend: Inquiry, a: Action): void {
         const card = actor.hand.find(c => c.id === a.cardId);
         if (!card || CARD_INFO[card.sub].kind !== 'equip') throw new Error('手中没有这张装备');
       } else if (a.type === 'useSkill') {
-        if (a.sub === 'kurou') {
-          if (!hasSkill(actor, 'kurou')) throw new Error('你没有该技能');
-          if (actor.hp <= 1) throw new Error('体力不足，不能发动【苦肉】');
-        } else if (a.sub === 'zhiheng') {
-          if (!hasSkill(actor, 'zhiheng')) throw new Error('你没有该技能');
-          if (s.usedSkills.includes('zhiheng')) throw new Error('【制衡】每回合限一次');
-          if (!a.cardIds || a.cardIds.length === 0) throw new Error('【制衡】至少弃置一张手牌');
-          if (new Set(a.cardIds).size !== a.cardIds.length || !a.cardIds.every(id => hasCard(id)))
-            throw new Error('弃置的牌不合法');
-        } else if (a.sub === 'rende') {
-          if (!hasSkill(actor, 'rende')) throw new Error('你没有该技能');
-          if (s.usedSkills.includes('rende')) throw new Error('【仁德】每回合限一次');
-          if (!a.cardIds || a.cardIds.length === 0) throw new Error('【仁德】至少给出一张手牌');
-          if (new Set(a.cardIds).size !== a.cardIds.length || !a.cardIds.every(id => hasCard(id)))
-            throw new Error('给出的牌不合法');
-          const t = a.targetIds?.[0] == null ? undefined : s.players[a.targetIds[0]];
-          if (!t || !t.alive || t.id === actor.id) throw new Error('【仁德】目标不合法');
-        } else if (a.sub === 'qingnang') {
-          if (!hasSkill(actor, 'qingnang')) throw new Error('你没有该技能');
-          if (s.usedSkills.includes('qingnang')) throw new Error('【青囊】每回合限一次');
-          if (a.cardId == null || !hasCard(a.cardId)) throw new Error('【青囊】需要弃置一张手牌');
-          const t = a.targetIds?.[0] == null ? undefined : s.players[a.targetIds[0]];
-          if (!t || !t.alive) throw new Error('【青囊】目标不合法');
-          if (t.hp >= t.maxHp) throw new Error('【青囊】目标体力已满');
-        } else if (a.sub === 'jieyin') {
-          // 结姻（孙尚香·M16）：弃两张手牌，选择一名已受伤的男性角色，双方各回复 1 点
-          if (!hasSkill(actor, 'jieyin')) throw new Error('你没有该技能');
-          if (s.usedSkills.includes('jieyin')) throw new Error('【结姻】每回合限一次');
-          if (!a.cardIds || a.cardIds.length !== 2) throw new Error('【结姻】需要弃置两张手牌');
-          if (new Set(a.cardIds).size !== 2 || !a.cardIds.every(id => hasCard(id)))
-            throw new Error('【结姻】弃置的牌不合法');
-          const t = a.targetIds?.[0] == null ? undefined : s.players[a.targetIds[0]];
-          if (!t || !t.alive || t.id === actor.id) throw new Error('【结姻】目标不合法');
-          if (GENERAL_SEX[t.general] !== 'm') throw new Error('【结姻】目标必须是男性');
-          if (t.hp >= t.maxHp) throw new Error('【结姻】目标体力已满');
-        } else if (a.sub === 'fanjian') {
-          if (!hasSkill(actor, 'fanjian')) throw new Error('你没有该技能');
-          if (s.usedSkills.includes('fanjian')) throw new Error('【反间】每回合限一次');
-          const c = actor.hand.find(x => x.id === a.cardId);
-          if (!c) throw new Error('【反间】需要展示一张手牌');
-          const t = a.targetIds?.[0] == null ? undefined : s.players[a.targetIds[0]];
-          if (!t || !t.alive || t.id === actor.id) throw new Error('【反间】目标不合法');
-        } else if (a.sub === 'lijian') {
-          if (!hasSkill(actor, 'lijian')) throw new Error('你没有该技能');
-          if (s.usedSkills.includes('lijian')) throw new Error('【离间】每回合限一次');
-          const c = actor.hand.find(x => x.id === a.cardId);
-          if (!c) throw new Error('【离间】需要弃置一张手牌');
-          if (!a.targetIds || a.targetIds.length !== 2 || a.targetIds[0] === a.targetIds[1])
-            throw new Error('【离间】需要两名不同的男性角色');
-          for (const tid of a.targetIds) {
-            const t = s.players[tid];
-            if (!t || !t.alive || t.id === actor.id) throw new Error('【离间】目标不合法');
-            if (GENERAL_SEX[t.general] !== 'm') throw new Error('【离间】目标必须是男性');
-          }
-        } else {
-          throw new Error('该技能不能主动发动');
-        }
+        // 主动技校验走技能模块（validateActive 抛错即拒绝）；未注册的 sub 不能主动发动
+        const hooks = SKILL_HOOKS[a.sub];
+        if (!hooks.validateActive) throw new Error('该技能不能主动发动');
+        hooks.validateActive(s, { player: actor, pend, action: a });
       } else if (a.type !== 'endPlay') {
         throw new Error('出牌阶段的动作不合法');
       }
@@ -446,7 +436,8 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
         s.log.push({ t: 'skill', player: actor.id, sub: asSub === 'lebusi' ? 'guose' : 'qixi', detail: `将【${CARD_INFO[card.sub].display}】当【${CARD_INFO[asSub].display}】使用` });
       }
       s.log.push({ t: 'playCard', player: actor.id, card: asSub, target: a.targetId });
-      checkJizhi(s, actor, asSub); // 集智（黄月英）：非延时锦囊摸一张（M16）
+      // 集智（黄月英，钩子）：非延时锦囊摸一张（M16）
+      skillOnTrickPlayed(s, actor, asSub, OPS);
       switch (asSub) {
         case 'wuzhong':
           // 无中生有：走帧结算才有无懈询问（M11）；牌本体随出牌入弃牌堆（帧只记因果 cardId）
@@ -514,70 +505,12 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       break;
     }
     case 'useSkill': {
+      // 通用记账：占用出牌阶段 + 限次登记 + 技能事件；效果在技能模块（applyActive）
       s.pending = null;
       s.turnPlays += 1;
       s.usedSkills.push(a.sub);
       s.log.push({ t: 'skill', player: actor.id, sub: a.sub });
-      if (a.sub === 'kurou') {
-        // 苦肉：失去 1 点体力（无来源），摸两张
-        hurt(s, actor.id, 1, undefined);
-        drawCards(s, actor.id, 2);
-        s.log.push({ t: 'draw', player: actor.id, n: 2 });
-      } else if (a.sub === 'zhiheng') {
-        // 制衡：弃任意张手牌并摸等量的牌
-        const ids = new Set(a.cardIds!);
-        const kept: Card[] = [];
-        for (const c of actor.hand) (ids.has(c.id) ? s.discard : kept).push(c);
-        actor.hand = kept;
-        s.log.push({ t: 'skill', player: actor.id, sub: 'zhiheng', detail: `弃置 ${a.cardIds!.length} 张，摸 ${a.cardIds!.length} 张` });
-        s.log.push({ t: 'discardCards', player: actor.id, n: a.cardIds!.length });
-        drawCards(s, actor.id, a.cardIds!.length);
-        s.log.push({ t: 'draw', player: actor.id, n: a.cardIds!.length });
-      } else if (a.sub === 'rende') {
-        // 仁德：把手牌交给一名其他角色；给出不少于两张则回复1点体力
-        const t = s.players[a.targetIds![0]!]!;
-        const ids = new Set(a.cardIds!);
-        const kept: Card[] = [];
-        for (const c of actor.hand) (ids.has(c.id) ? t.hand : kept).push(c);
-        actor.hand = kept;
-        s.log.push({ t: 'skill', player: actor.id, sub: 'rende', detail: `将 ${a.cardIds!.length} 张手牌交给 ${t.name}` });
-        if (a.cardIds!.length >= 2 && actor.hp < actor.maxHp) {
-          actor.hp += 1;
-          s.log.push({ t: 'heal', player: actor.id, amount: 1 });
-        }
-      } else if (a.sub === 'qingnang') {
-        // 青囊：弃一张手牌，令一名已受伤角色回复1点体力（不占出桃次数）
-        const t = s.players[a.targetIds![0]!]!;
-        s.discard.push(removeFromHand(actor, a.cardId!));
-        s.log.push({ t: 'skill', player: actor.id, sub: 'qingnang', detail: `${t.name} 回复1点体力` });
-        t.hp += 1;
-        s.log.push({ t: 'heal', player: t.id, amount: 1 });
-      } else if (a.sub === 'fanjian') {
-        // 反间：令目标猜一种花色；猜错则受 1 点伤害（展示的手牌无论如何都交给目标）
-        const t = s.players[a.targetIds![0]!]!;
-        s.log.push({ t: 'skill', player: actor.id, sub: 'fanjian', detail: `令 ${t.name} 猜一种花色` });
-        s.pending = { kind: 'fanjian', playerId: t.id, fanjian: { sourceId: actor.id, cardId: a.cardId! } };
-      } else if (a.sub === 'jieyin') {
-        // 结姻：弃两张手牌，双方各回复 1 点（自己满血时也照样回，取上限）
-        const t = s.players[a.targetIds![0]!]!;
-        const ids = new Set(a.cardIds!);
-        const kept: Card[] = [];
-        for (const c of actor.hand) (ids.has(c.id) ? s.discard : kept).push(c);
-        actor.hand = kept;
-        s.log.push({ t: 'discardCards', player: actor.id, n: 2 });
-        s.log.push({ t: 'skill', player: actor.id, sub: 'jieyin', detail: `与 ${t.name} 各回复1点体力` });
-        actor.hp = Math.min(actor.maxHp, actor.hp + 1);
-        t.hp = Math.min(t.maxHp, t.hp + 1);
-        s.log.push({ t: 'heal', player: actor.id, amount: 1 });
-        s.log.push({ t: 'heal', player: t.id, amount: 1 });
-      } else if (a.sub === 'lijian') {
-        // 离间：弃一张手牌，视为第一名男性对第二名男性使用【决斗】
-        // （被弃的手牌即决斗帧的因果牌，入弃牌堆；可被无懈可击抵消）
-        const card = removeFromHand(actor, a.cardId!);
-        s.discard.push(card);
-        const [userId, targetId] = a.targetIds!;
-        s.frames.push(makeTrickFrame(s, userId, 'juedou', card, [targetId]));
-      }
+      SKILL_HOOKS[a.sub].applyActive?.(s, { player: actor, pend, action: a }, OPS);
       break;
     }
     case 'endPlay': {
@@ -712,17 +645,8 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
         }
         s.log.push({ t: 'respond', player: actor.id, card: 'tao', resp: 'tao' });
         s.log.push({ t: 'heal', player: dying.id, amount: 1 });
-        // 救援（孙权·主公技）：其他吴势力角色对主公使用【桃】时，主公额外回复 1 点（M14）
-        if (
-          actor.id !== dying.id &&
-          dying.identity === 'zhu' &&
-          hasSkill(dying, 'jiuyuan') &&
-          GENERAL_FACTION[actor.general] === 'wu'
-        ) {
-          dying.hp += 1;
-          s.log.push({ t: 'skill', player: dying.id, sub: 'jiuyuan', detail: `${actor.name} 的【桃】额外回复1点` });
-          s.log.push({ t: 'heal', player: dying.id, amount: 1 });
-        }
+        // 救援（孙权·主公技，钩子）：其他吴势力角色对主公用桃时的额外回复
+        skillTaoExtraHeal(s, dying, actor, OPS);
         if (dying.hp <= 0) askNextTao(s, dying.id, pend.shaSourceId ?? null, asked);
       } else {
         s.log.push({ t: 'respond', player: actor.id, card: null, resp: 'tao' });
@@ -731,35 +655,13 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       break;
     }
     case 'respondTrigger': {
+      // 触发技：通用记账（限次 + 技能事件）后按 sub 分派到技能模块（onTrigger）
       s.pending = null;
       const p = s.players[pend.playerId]!;
       if (a.use) {
         s.usedSkills.push(pend.sub!);
         s.log.push({ t: 'skill', player: p.id, sub: pend.sub! });
-        if (pend.sub === 'jianxiong') {
-          for (const c of pend.triggerCards ?? []) {
-            const i = s.discard.findIndex(x => x.id === c.id);
-            if (i >= 0) {
-              const [card] = s.discard.splice(i, 1);
-              p.hand.push(card!);
-            }
-          }
-        } else if (pend.sub === 'fankui' && pend.triggerSourceId != null) {
-          const src = s.players[pend.triggerSourceId]!;
-          askSkillPick(s, p.id, 'fankui', src.id);
-        } else if (pend.sub === 'xiaoji') {
-          drawCards(s, p.id, 2);
-          s.log.push({ t: 'draw', player: p.id, n: 2 });
-        } else if (pend.sub === 'luoshen') {
-          beginJudge(s, { forId: p.id, reason: 'luoshen', result: drawJudgeCard(s, p.id, 'luoshen'), mode: 'luoshen' });
-        } else if (pend.sub === 'yiji') {
-          // 遗计：牌已在伤害结算时摸进手里，这里逐张问分配（全部留给自己 = 直接结束）
-          const pool = (pend.triggerCards ?? []).filter(c => p.hand.some(x => x.id === c.id));
-          if (pool.length > 0) s.pending = { kind: 'yiji', playerId: p.id, yijiPool: pool };
-        } else if (pend.sub === 'lianying') {
-          drawCards(s, p.id, 1);
-          s.log.push({ t: 'draw', player: p.id, n: 1 });
-        }
+        SKILL_HOOKS[pend.sub!].onTrigger?.(s, { player: p, pend }, OPS);
       }
       break;
     }
@@ -773,14 +675,8 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       }
       const card = removeFromHand(p, a.cardId);
       s.log.push({ t: 'skill', player: p.id, sub: pend.sub!, detail: `弃【${CARD_INFO[card.sub].display}】` });
-      if (pend.sub === 'guicai' && s.judgeState) {
-        // 鬼才：打出的手牌成为新判定牌，旧判定牌进弃牌堆（判定牌在生效时统一处置）
-        const old = s.judgeState.result;
-        s.judgeState.result = card;
-        s.discard.push(old);
-        s.judgeState.usedGuicai.push(p.id);
-        s.log.push({ t: 'judgeModify', player: p.id, sub: 'guicai', card });
-      } else {
+      // 鬼才（钩子）：打出的手牌成为新判定牌，旧判定牌进弃牌堆；未替换则牌入弃牌堆
+      if (pend.sub == null || !skillReplaceJudgeCard(s, p, card)) {
         s.discard.push(card);
       }
       break;
@@ -846,47 +742,21 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       break;
     }
     case 'respondGuanxing': {
-      // 观星：topIds[0] 最先被摸到 → 逆序压回牌堆顶；其余按原顺序置底
+      // 观星（技能模块）：置顶/置底的重排与日志
       s.pending = null;
-      const shown = pend.guanxingCards ?? [];
-      const byId = new Map(shown.map(c => [c.id, c]));
-      const topSet = new Set(a.topIds);
-      const rest = shown.filter(c => !topSet.has(c.id));
-      s.deck.unshift(...rest);
-      for (let i = a.topIds.length - 1; i >= 0; i--) s.deck.push(byId.get(a.topIds[i]!)!);
-      s.log.push({
-        t: 'skill',
-        player: actor.id,
-        sub: 'guanxing',
-        detail: `观星 ${shown.length} 张：${a.topIds.length} 张置顶`,
-      });
+      PENDING_HOOKS.guanxing(s, { player: actor, pend, action: a }, OPS);
       break;
     }
     case 'respondLiuli': {
-      // 流离：弃一张手牌并把杀转移给所选男性（帧内当前目标直接换人，stepSha 重新推进）
+      // 流离（技能模块）：弃一张手牌并把杀转移给所选男性（帧内当前目标直接换人）
       s.pending = null;
-      const f = pend.frameId != null ? s.frames.find(fr => fr.id === pend.frameId) : undefined;
-      if (a.cardId != null && f && f.kind === 'sha') {
-        s.discard.push(removeFromHand(actor, a.cardId));
-        s.log.push({ t: 'skill', player: actor.id, sub: 'liuli', detail: `弃牌，【杀】转移给 ${s.players[a.transferTo!]!.name}` });
-        f.targets[f.idx] = a.transferTo!;
-      }
+      PENDING_HOOKS.liuli(s, { player: actor, pend, action: a }, OPS);
       break;
     }
     case 'respondFanjian': {
-      // 反间：展示手牌交给目标；猜错花色则受 1 点伤害（周瑜造成）
+      // 反间（技能模块）：展示手牌交给目标；猜错花色则受 1 点伤害（周瑜造成）
       s.pending = null;
-      const fj = pend.fanjian!;
-      const source = s.players[fj.sourceId]!;
-      const card = removeFromHand(source, fj.cardId);
-      actor.hand.push(card);
-      s.log.push({ t: 'skill', player: source.id, sub: 'fanjian', detail: `展示【${CARD_INFO[card.sub].display}】交给 ${actor.name}` });
-      s.log.push({ t: 'gainCard', player: actor.id, from: source.id });
-      if (a.suit === card.suit) {
-        s.log.push({ t: 'skill', player: source.id, sub: 'fanjian', detail: `${actor.name} 猜中花色，未受伤` });
-      } else {
-        dealDamage(s, actor.id, 1, source.id);
-      }
+      PENDING_HOOKS.fanjian(s, { player: actor, pend, action: a }, OPS);
       break;
     }
     case 'respondWugu': {
@@ -940,52 +810,24 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
       break;
     }
     case 'respondDraw': {
-      // 摸牌阶段抉择（M16）：突袭 → 选目标；裸衣 → 少摸一张+伤害加成；默认 → 正常摸牌
+      // 摸牌阶段抉择（M16）：按动作里的 skill 名分派到技能模块；默认 → 正常摸牌
       s.pending = null;
       s.drawPhaseAsked = true; // 每回合只问一次
-      if (a.skill === 'tuxi') {
-        const to = othersInOrder(s, actor.id).filter(id => s.players[id]!.hand.length > 0);
-        if (to.length === 0) {
-          drawPhaseDefault(s, actor);
-          break;
-        }
-        s.pending = { kind: 'tuxi', playerId: actor.id, tuxiTo: to };
-        break;
+      if (!skillDrawPhaseChoice(s, actor, a, OPS)) {
+        drawPhaseDefault(s, actor);
       }
-      if (a.skill === 'luoyi') {
-        applyLuoyi(s, actor);
-        s.phase = 'play';
-        break;
-      }
-      drawPhaseDefault(s, actor);
       break;
     }
     case 'respondTuxi': {
-      // 突袭：夺取所选角色（至多两名）各一张手牌
+      // 突袭（技能模块）：夺取所选角色（至多两名）各一张手牌
       s.pending = null;
-      const ids = a.targetIds.filter(id => pend.tuxiTo?.includes(id)).slice(0, 2);
-      applyTuxi(s, actor, ids);
-      s.phase = 'play';
+      PENDING_HOOKS.tuxi(s, { player: actor, pend, action: a }, OPS);
       break;
     }
     case 'respondYiji': {
-      // 遗计（郭嘉）：把池中一张牌交给所选角色（null = 自己留着）
+      // 遗计（郭嘉）：把池中一张牌交给所选角色（null = 自己留着）——技能模块结算
       s.pending = null;
-      const pool = pend.yijiPool!;
-      const i = pool.findIndex(c => c.id === a.cardId);
-      const [card] = pool.splice(i, 1);
-      const to = a.toId == null ? actor : s.players[a.toId]!;
-      if (to.id !== actor.id) {
-        // 牌已在遗计生效时摸进自己手里，交给别人需先从手牌移出
-        removeFromHand(actor, card!.id);
-        to.hand.push(card!);
-        s.log.push({ t: 'skill', player: actor.id, sub: 'yiji', detail: `将【${CARD_INFO[card!.sub].display}】交给 ${to.name}` });
-        s.log.push({ t: 'gainCard', player: to.id, from: actor.id });
-      }
-      // 池中还有牌就继续问；清空则结束
-      if (pool.length > 0) {
-        s.pending = { kind: 'yiji', playerId: actor.id, yijiPool: pool };
-      }
+      SKILL_HOOKS.yiji!.applyPending!(s, { player: actor, pend, action: a } as SkillCtx, OPS);
       break;
     }
   }
@@ -1064,42 +906,14 @@ function stepSha(s: GameState, f: ShaFrame): void {
     s.log.push({ t: 'draw', player: source.id, n: 1 });
     s.log.push({ t: 'ability', player: source.id, sub: 'cixiong', detail: `${target.name} 没有手牌，摸一张牌` });
   }
-  // 流离（大乔）：成为杀的目标时，可弃一张手牌转移给距离1以内的其他男性（防互转：每目标一次）
-  if (hasSkill(target, 'liuli') && !f.liuliDone.includes(target.id) && target.hand.length > 0) {
-    const to = othersInOrder(s, target.id).filter(
-      id =>
-        GENERAL_SEX[s.players[id]!.general] === 'm' &&
-        id !== source.id &&
-        seatDistance(s, target.id, id) <= 1,
-    );
-    if (to.length > 0) {
-      f.liuliDone.push(target.id);
-      s.pending = { kind: 'liuli', playerId: target.id, frameId: f.id, liuliTo: to, liuliSourceId: source.id };
-      return;
-    }
-  }
-  // 铁骑（马超）：指定目标后判定，红色则此目标不可闪避（每目标判定一次）
-  if (hasSkill(source, 'tieji') && source.alive && !f.tiejiTried.includes(target.id)) {
-    f.tiejiTried.push(target.id);
-    // 发动即记技能事件（判定结果另见 judge 事件）——否则判定为黑时日志里
-    // 完全看不到铁骑发动过，观测与回归都无从下手
-    s.log.push({ t: 'skill', player: source.id, sub: 'tieji', detail: `对 ${target.name} 判定` });
-    beginJudge(s, {
-      forId: source.id,
-      reason: 'tieji',
-      result: drawJudgeCard(s, source.id, 'tieji'),
-      mode: 'tieji',
-      tiejiFrameId: f.id,
-      tiejiTargetId: target.id,
-    });
-    return;
-  }
-  if (f.tiejiHit.includes(target.id)) {
-    s.log.push({ t: 'skill', player: source.id, sub: 'tieji', detail: `${target.name} 不可用【闪】响应` });
-    shaHit(s, source.id, target.id, f.cardId);
-    f.idx += 1;
-    return;
-  }
+  // 流离（大乔，钩子）：成为杀的目标时可弃一张手牌转移给距离1以内的其他男性
+  //（防互转：每目标一次）；铁骑（马超，钩子）：判定，红色则此目标不可闪避。
+  // 任一钩子开出询问即暂停推进（返回 true）。
+  const shaCtx = (t: PlayerState): SkillCtx => ({ player: t, sourceId: source.id, frame: f });
+  if (SKILL_HOOKS.liuli.onShaTargeted?.(s, shaCtx(target), OPS)) return;
+  if (SKILL_HOOKS.tieji.onShaTargeted?.(s, shaCtx(target), OPS)) return;
+  // 铁骑命中改写（钩子）：判定成功的目标不可用【闪】响应，直接命中并推进帧
+  if (SKILL_HOOKS.tieji.modifyShaHit?.(s, shaCtx(target), OPS)) return;
   // 青釭剑：无视八卦阵
   const ignoreShield = source.equipment.weapon?.sub === 'qinggang';
   if (ignoreShield && target.equipment.shield) {
@@ -1262,50 +1076,14 @@ function askSkillPick(s: GameState, ownerId: number, sub: 'fankui', targetId: nu
   };
 }
 
-/** 伤害入口：记账 + 伤害后触发技（奸雄/反馈）入队 */
+/** 伤害入口：记账 + 伤害后触发技（奸雄/反馈/遗计/刚烈，钩子）+ 濒死求桃 */
 function dealDamage(s: GameState, targetId: number, amount: number, sourceId?: number, cardId?: number): void {
   const target = s.players[targetId]!;
   target.hp -= amount;
   s.log.push({ t: 'damage', player: targetId, amount, source: sourceId });
-  if (hasSkill(target, 'jianxiong') && cardId != null) {
-    const card = s.discard.find(c => c.id === cardId);
-    if (card) queueTrigger(s, { sub: 'jianxiong', playerId: targetId, cards: [card] });
-  }
-  if (hasSkill(target, 'fankui') && sourceId != null && sourceId !== targetId) {
-    const src = s.players[sourceId]!;
-    if (hasAnyCard(src)) queueTrigger(s, { sub: 'fankui', playerId: targetId, sourceId });
-  }
-  // 遗计（郭嘉）：每受到 1 点伤害后摸两张牌并可分配（M16）。牌先入自己手牌，
-  // 分配由 trigger 后的 yiji 询问逐张进行（放弃分配即等于自己留着）。
-  if (hasSkill(target, 'yiji')) {
-    const want = amount * 2;
-    const cards: Card[] = [];
-    for (let i = 0; i < want; i++) {
-      reshuffleIfNeeded(s);
-      if (s.deck.length === 0) break;
-      cards.push(s.deck.pop()!);
-    }
-    if (cards.length > 0) {
-      target.hand.push(...cards);
-      s.log.push({ t: 'skill', player: target.id, sub: 'yiji', detail: `摸 ${cards.length} 张（可分配）` });
-      s.log.push({ t: 'draw', player: target.id, n: cards.length });
-      queueTrigger(s, { sub: 'yiji', playerId: target.id, cards });
-    }
-  }
-  if (
-    target.hp > 0 &&
-    hasSkill(target, 'ganglie') &&
-    sourceId != null &&
-    sourceId !== targetId
-  ) {
-    beginJudge(s, {
-      forId: targetId,
-      reason: 'ganglie',
-      result: drawJudgeCard(s, targetId, 'ganglie'),
-      mode: 'ganglie',
-      ganglieSourceId: sourceId,
-    });
-  }
+  // 伤害后触发技走钩子（次序见 skills/index.ts 的 DAMAGED_ORDER——
+  // 遗计的摸牌在刚烈的判定摸牌之前消耗牌堆，不可调整）
+  skillOnDamaged(s, targetId, amount, sourceId, cardId, OPS);
   if (target.hp <= 0) {
     s.log.push({ t: 'dying', player: targetId });
     // 濒死求桃：从濒死玩家自己开始按座次询问；每条询问链每人至多用一张桃（简化）
@@ -1324,28 +1102,12 @@ function queueTrigger(s: GameState, t: PendingTrigger): void {
 }
 
 /**
- * 连营（陆逊·M16）：失去最后一张手牌后可摸一张。
+ * 连营（陆逊·M16，钩子在 skills/lianying.ts）：失去最后一张手牌后可摸一张。
  * 手牌离开的路径太多（出牌/应答/弃置/被夺），逐个插钩子必然漏——改为在动作应用后
  * 统一比对"动作前有牌、动作后无牌"的持有者，一次性入队。
  */
 function checkLianying(s: GameState, prev: GameState): void {
-  for (const p of s.players) {
-    if (!p.alive || !hasSkill(p, 'lianying')) continue;
-    const before = prev.players[p.id]!.hand.length;
-    if (before > 0 && p.hand.length === 0) {
-      queueTrigger(s, { sub: 'lianying', playerId: p.id });
-    }
-  }
-}
-
-/** 集智（黄月英·M16）：使用非延时锦囊时摸一张（延时锦囊与无懈不算） */
-function checkJizhi(s: GameState, actor: PlayerState, sub: CardSub): void {
-  if (!hasSkill(actor, 'jizhi')) return;
-  const DELAYED: CardSub[] = ['lebusi', 'bingliang', 'shandian'];
-  if (DELAYED.includes(sub) || sub === 'wuxie') return;
-  drawCards(s, actor.id, 1);
-  s.log.push({ t: 'skill', player: actor.id, sub: 'jizhi' });
-  s.log.push({ t: 'draw', player: actor.id, n: 1 });
+  for (const p of s.players) skillOnLastHandLost(s, p, prev, OPS);
 }
 
 // —— 判定链（M4：翻开 → 鬼才询问链 → 生效） ——
@@ -1361,7 +1123,7 @@ function beginJudge(s: GameState, st: Omit<JudgeState, 'usedGuicai'> & { usedGui
   s.judgeState = { ...st, usedGuicai: st.usedGuicai ?? [] };
 }
 
-/** 鬼才询问链：从判定者起按座次找第一个有手牌且未询问过的鬼才持有者 */
+/** 鬼才询问链：从判定者起按座次找第一个可被询问的技能持有者（鬼才，钩子判定资格） */
 function stepJudge(s: GameState): void {
   const js = s.judgeState!;
   const n = s.players.length;
@@ -1369,8 +1131,9 @@ function stepJudge(s: GameState): void {
     const p = s.players[(js.forId + k) % n]!;
     if (!p.alive) continue;
     if (js.usedGuicai.includes(p.id)) continue;
-    if (!hasSkill(p, 'guicai') || p.hand.length === 0) continue;
-    s.pending = { kind: 'skillCard', playerId: p.id, sub: 'guicai' };
+    const askSub = skillJudgeAskSub(s, p, js);
+    if (askSub == null) continue;
+    s.pending = { kind: 'skillCard', playerId: p.id, sub: askSub };
     return;
   }
   resolveJudge(s);
@@ -1381,15 +1144,10 @@ function resolveJudge(s: GameState): void {
   const js = s.judgeState!;
   s.judgeState = null;
   const jc = js.result;
-  // 天妒（郭嘉·M16）：判定牌生效后可以获得之——直接收进手牌，不再进弃牌堆
+  // 天妒（郭嘉·M16，钩子）：判定牌生效后可以获得之——直接收进手牌；否则进弃牌堆
+  //（被鬼才替换过的旧牌已在替换时入堆）。对所有判定 mode 生效。
   const judger = s.players[js.forId]!;
-  if (hasSkill(judger, 'tiandu')) {
-    judger.hand.push(jc);
-    s.log.push({ t: 'skill', player: judger.id, sub: 'tiandu', detail: '获得判定牌' });
-    s.log.push({ t: 'gainCard', player: judger.id, from: judger.id });
-  } else {
-    s.discard.push(jc); // 判定牌生效后进弃牌堆（被鬼才替换过的旧牌已在替换时入堆）
-  }
+  if (!skillJudgeCardGain(s, judger, js)) s.discard.push(jc);
   if (js.mode === 'bagua') {
     const actor = s.players[js.forId]!;
     const pend = js.baguaPend!;
@@ -1404,34 +1162,18 @@ function resolveJudge(s: GameState): void {
     return;
   }
   if (js.mode === 'tieji') {
-    // 铁骑：判定红色 → 目标不可用闪响应（记入杀帧，stepSha 重入时直接命中）
-    if (jc.suit === '♥' || jc.suit === '♦') {
-      const f = s.frames.find(fr => fr.id === js.tiejiFrameId);
-      if (f && f.kind === 'sha') f.tiejiHit.push(js.tiejiTargetId!);
-    }
+    // 铁骑（钩子）：判定红色 → 目标不可用闪响应（记入杀帧，stepSha 重入时直接命中）
+    SKILL_HOOKS.tieji.onJudgeResolved?.(s, { player: judger, judge: js }, OPS);
     return;
   }
   if (js.mode === 'ganglie') {
-    // 刚烈：非红桃 → 伤害来源受到1点反伤（来源=夏侯惇）
-    if (jc.suit !== '♥' && js.ganglieSourceId != null) {
-      const src = s.players[js.ganglieSourceId]!;
-      if (src.alive) {
-        s.log.push({ t: 'skill', player: js.forId, sub: 'ganglie', detail: `${src.name} 受到1点反伤` });
-        dealDamage(s, src.id, 1, js.forId);
-      }
-    }
+    // 刚烈（钩子）：非红桃 → 伤害来源受到1点反伤（来源=夏侯惇）
+    SKILL_HOOKS.ganglie.onJudgeResolved?.(s, { player: judger, judge: js }, OPS);
     return;
   }
   if (js.mode === 'luoshen') {
-    // 洛神：黑色 → 判定牌收入手牌并继续判定；红色 → 终止（判定牌已进弃牌堆）
-    const actor = s.players[js.forId]!;
-    if (jc.suit === '♠' || jc.suit === '♣') {
-      const i = s.discard.findIndex(c => c.id === jc.id);
-      if (i >= 0) s.discard.splice(i, 1);
-      actor.hand.push(jc);
-      s.log.push({ t: 'gainCard', player: actor.id, from: actor.id });
-      queueTrigger(s, { sub: 'luoshen', playerId: actor.id });
-    }
+    // 洛神（钩子）：黑色 → 判定牌收入手牌并继续判定；红色 → 终止（判定牌已处置）
+    SKILL_HOOKS.luoshen.onJudgeResolved?.(s, { player: judger, judge: js }, OPS);
     return;
   }
   // 延时锦囊：zone 牌按效果处置（生效弃置 / 闪电转移）
@@ -1782,17 +1524,10 @@ export function advance(s: GameState): void {
       endTurn(s);
       continue;
     }
-    // 准备阶段（M7）：观星询问 → 洛神触发，随后进入判定阶段
+    // 准备阶段（M7）：观星询问 → 洛神触发（技能钩子），随后进入判定阶段
     if (!s.prepared) {
       s.prepared = true;
-      if (hasSkill(cur, 'guanxing') && s.deck.length > 0) {
-        const x = Math.min(s.players.filter(p => p.alive).length, s.deck.length, 5);
-        const cards: Card[] = [];
-        for (let i = 0; i < x; i++) cards.push(s.deck.pop()!);
-        s.pending = { kind: 'guanxing', playerId: cur.id, guanxingCards: cards };
-        return;
-      }
-      if (hasSkill(cur, 'luoshen')) queueTrigger(s, { sub: 'luoshen', playerId: cur.id });
+      if (skillPreparePhase(s, cur, OPS)) return;
     }
     if (s.phase === 'judge') {
       s.judging = true;
@@ -1815,11 +1550,8 @@ export function advance(s: GameState): void {
       continue;
     }
     if (s.phase === 'draw') {
-      // 摸牌阶段（M16）：张辽突袭 / 许褚裸衣 会改变本阶段的摸牌数，先问持有者
-      if (
-        (hasSkill(cur, 'tuxi') || hasSkill(cur, 'luoyi')) &&
-        !s.drawPhaseAsked
-      ) {
+      // 摸牌阶段（M16）：突袭/裸衣会改变本阶段的摸牌数，先问持有者（钩子）
+      if (!s.drawPhaseAsked && skillDrawPhaseAsk(s, cur)) {
         s.pending = { kind: 'drawPhase', playerId: cur.id };
         return;
       }
@@ -1834,10 +1566,9 @@ export function advance(s: GameState): void {
       s.pending = { kind: 'play', playerId: cur.id };
       return;
     }
-    // 弃牌阶段：手牌数须不大于当前体力值；克己（吕蒙·锁定）跳过
+    // 弃牌阶段：手牌数须不大于当前体力值；克己（吕蒙·锁定）跳过（钩子）
     const n = cur.hand.length - cur.hp;
-    if (n > 0 && hasSkill(cur, 'keji') && !s.shaUsed) {
-      s.log.push({ t: 'skill', player: cur.id, sub: 'keji' });
+    if (n > 0 && skillSkipDiscard(s, cur)) {
       endTurn(s);
       continue;
     }
@@ -1849,44 +1580,18 @@ export function advance(s: GameState): void {
   }
 }
 
-/** 默认摸牌阶段：英姿（周瑜·锁定）多摸一张 */
+/** 默认摸牌阶段：额外摸牌数经技能钩子（英姿 +1，贡献时自记 skill 事件） */
 function drawPhaseDefault(s: GameState, cur: PlayerState): void {
-  const n = (hasSkill(cur, 'yingzi') ? 3 : 2) + 0;
-  if (n === 3) s.log.push({ t: 'skill', player: cur.id, sub: 'yingzi' });
+  const n = 2 + skillDrawCountBonus(s, cur);
   drawCards(s, cur.id, n);
   s.log.push({ t: 'draw', player: cur.id, n });
   s.phase = 'play';
 }
 
-/** 突袭（张辽）：放弃摸牌，改为获得至多两名其他角色各一张手牌（手牌随机） */
-function applyTuxi(s: GameState, actor: PlayerState, targetIds: number[]): void {
-  for (const tid of targetIds.slice(0, 2)) {
-    const t = s.players[tid]!;
-    if (!t.alive || t.hand.length === 0) continue;
-    const idx = randU32(s) % t.hand.length;
-    const [card] = t.hand.splice(idx, 1);
-    actor.hand.push(card!);
-    s.log.push({ t: 'skill', player: actor.id, sub: 'tuxi', detail: `获得 ${t.name} 的一张手牌` });
-    s.log.push({ t: 'gainCard', player: actor.id, from: tid });
-  }
-}
-
-/** 裸衣（许褚）：少摸一张，本回合【杀】/【决斗】造成的伤害 +1 */
-function applyLuoyi(s: GameState, actor: PlayerState): void {
-  s.log.push({ t: 'skill', player: actor.id, sub: 'luoyi' });
-  drawCards(s, actor.id, 1);
-  s.log.push({ t: 'draw', player: actor.id, n: 1 });
-  s.damageBonus += 1;
-}
-
 function endTurn(s: GameState): void {
-  // 闭月（貂蝉）：结束阶段摸一张牌（自动发动；死亡玩家不摸）
+  // 闭月（貂蝉，钩子）：结束阶段摸一张牌（自动发动；死亡玩家不摸）
   const cur = s.players[s.turnIdx]!;
-  if (cur.alive && hasSkill(cur, 'biyue')) {
-    drawCards(s, cur.id, 1);
-    s.log.push({ t: 'skill', player: cur.id, sub: 'biyue' });
-    s.log.push({ t: 'draw', player: cur.id, n: 1 });
-  }
+  skillOnTurnEnd(s, cur, OPS);
   s.phase = 'judge';
   s.playedSha = false;
   s.turnPlays = 0;
@@ -1910,9 +1615,9 @@ function endTurn(s: GameState): void {
   s.log.push({ t: 'turnStart', player: s.turnIdx });
 }
 
-/** 裸衣（许褚·M16）：本回合其【杀】/【决斗】造成的伤害 +1 */
+/** 杀/决斗伤害：1 + 技能钩子加成之和（裸衣经 damageBonus 字段贡献，回合结束清零） */
 function shaDamageAmount(s: GameState, sourceId: number): number {
-  return 1 + s.damageBonus;
+  return 1 + skillModifyShaDamage(s, sourceId);
 }
 
 function shaHit(s: GameState, sourceId: number, targetId: number, cardId: number): void {
@@ -1935,9 +1640,9 @@ function discardMount(s: GameState, targetId: number): void {
   loseEquipTrigger(s, t);
 }
 
-/** 枭姬（孙尚香）：失去装备区的一张牌后摸两张（死亡清算不触发） */
+/** 失去装备区一张牌后的技能钩子（枭姬；死亡清算不触发——判定在钩子内） */
 function loseEquipTrigger(s: GameState, owner: PlayerState): void {
-  if (owner.alive && hasSkill(owner, 'xiaoji')) queueTrigger(s, { sub: 'xiaoji', playerId: owner.id });
+  skillOnEquipLost(s, owner, OPS);
 }
 
 /**
@@ -1948,10 +1653,8 @@ function askNextTao(s: GameState, dyingId: number, sourceId: number | null, aske
   const n = s.players.length;
   for (let k = 0; k < n; k++) {
     const p = s.players[(dyingId + k) % n]!;
-    // 有真桃，或持有急救且有红色手牌（华佗：回合外红牌当桃）都可被询问
-    const canSave =
-      p.hand.some(c => c.sub === 'tao') ||
-      (hasSkill(p, 'jijiu') && p.hand.some(c => isRedCard(c)));
+    // 有真桃，或急救持有者有红色手牌（钩子；华佗：回合外红牌当桃）都可被询问
+    const canSave = p.hand.some(c => c.sub === 'tao') || skillCanSaveTao(s, p);
     if (p.alive && !askedIds.includes(p.id) && canSave) {
       s.pending = { kind: 'respondTao', playerId: p.id, dyingId, shaSourceId: sourceId ?? undefined, askedIds };
       return;
