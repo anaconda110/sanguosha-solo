@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import { aiAction } from './ai/mc';
 import { setup } from './engine/setup';
 import { hasAnyCard, inShaRange, seatDistance, step } from './engine/step';
@@ -213,8 +213,8 @@ function enqueueAnimations(fromIdx: number) {
   }
   const news = state.log.slice(fromIdx);
   news.forEach((e, i) => {
-    const delay = i * 260 / settings.speed; // 动画节奏随设置倍率（M18）
-    playSound(eventSound(e), delay / 1000); // 音效与动画同拍（M18）
+    const delay = (i * 260) / settings.value.speed; // 动画节奏随设置倍率（M18）
+    try { playSound(eventSound(e), delay / 1000); } catch { /* 音效故障不得中断演出/游戏 */ }
     switch (e.t) {
       case 'playCard': {
         const name = CARD_INFO[e.card].display;
@@ -368,12 +368,14 @@ async function scheduleAi() {
     thinking.value = false;
     if (gid !== gameId || state.winner || !state.pending || state.pending.playerId !== pid) return;
     if (!a) return;
-    applyStep(a);
+    try {
+      applyStep(a);
+    } catch (e) {
+      console.error('applyStep 异常（AI 链继续）:', e); // 演出层故障不杀 AI 链（M19 修复）
+    }
     void scheduleAi();
   }, (spectate.value ? 700 : 550) / settings.value.speed);
 }
-void scheduleAi();
-
 function refresh() {
   view.value = viewOf(state, humanId.value);
   persist();
@@ -548,8 +550,10 @@ function updateSettings(patch: Partial<Settings>) {
   settings.value = { ...settings.value, ...patch };
   saveSettings(settings.value);
   configureSound(settings.value.soundOn, settings.value.volume);
+void scheduleAi(); // 初始调度必须在 settings 之后(M19:TDZ 曾致首回合 AI 冻结)
 }
 configureSound(settings.value.soundOn, settings.value.volume);
+void scheduleAi(); // 初始调度必须在 settings 之后(M19:TDZ 曾致首回合 AI 冻结)
 /** 战绩统计面板（M9）：批量规则 AI 自战 */
 const showStats = ref(false);
 const batchRunning = ref(false);
