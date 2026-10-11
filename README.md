@@ -35,18 +35,20 @@ npm run regression # 逐技回归护栏（40 技能覆盖 + 无懈链 + 构造�
 - **界面**（`src/App.vue`）：环形桌位、卡牌角标、指向箭头、判定/伤害动画、观星
   选牌、武将图鉴、战绩统计面板（批量 AI 自战胜率）；**存档续局**（localStorage
   单槽，刷新不丢局）、**观战模式**（5 AI 自战）、种子输入（指定 seed 复现）、
-  回放拖动跳转（ADR-0021）。
+  回放拖动跳转（ADR-0021）、**新手引导**（首次进入五条要点，ADR-0023）。
+- **发布闭环**（ADR-0023）：GitHub Actions CI（push/PR 自动跑 typecheck + smoke
+  + regression + build）、GitHub Pages 自动部署（`https://anaconda110.github.io/sanguosha-solo/`）。
 
 ## 文档
 
 - [CONTEXT.md](CONTEXT.md) — 领域术语表（结算栈/时序点/确定性化/选牌……）
-- [docs/adr/](docs/adr/) — 22 篇架构决策记录（ADR-0001~0022），每篇含"已知简化"
+- [docs/adr/](docs/adr/) — 23 篇架构决策记录（ADR-0001~0023），每篇含"已知简化"
 
 ## 测试
 
 - `npm run smoke` — 多局 AI 自战：正常终局、卡牌守恒、同 seed 完全可复现
-- `npm run regression` — 逐技回归：40 项技能中 34 项有断言（余 6 项为
-  空城/马术/奇才/护驾/激将/救援，尚待补）、无懈链奇偶、17 项构造局面
+- `npm run regression` — 逐技回归：40 项技能全覆盖（34 项自战断言 + 6 项构造局面）、
+  无懈链奇偶、23 项构造局面
 - `scripts/probe-m4.ts` — 技能/装备激活次数探针（`npx tsx scripts/probe-m4.ts 60`）
 - `scripts/probe-belief.ts` — 身份推断准确率（命中/误判/弃权三档）
 - `scripts/probe-friendly.ts` — 同阵营互伤统计（身份推断的效果观测）

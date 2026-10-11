@@ -646,7 +646,9 @@ function apply(s: GameState, pend: Inquiry, a: Action): void {
           advanceTarget(s, f); // 南蛮：本目标通过
           return;
         }
-        const need = hasSkill(actor, 'wushuang') ? 2 : 1;
+        // 无双以"牌的归属者"计（代打出时是主公）——当前池内无重叠，纯语义正确性
+        const bearer = pend.aidForId != null ? s.players[pend.aidForId]! : actor;
+        const need = hasSkill(bearer, 'wushuang') ? 2 : 1;
         f.duelShaPlayed += 1;
         if (f.duelShaPlayed >= need) {
           f.duelShaPlayed = 0;
@@ -1105,8 +1107,10 @@ function stepSha(s: GameState, f: ShaFrame): void {
   }
   const canShan =
     target.hand.some(c => canActAsShan(target, c)) || (!!target.equipment.shield && !ignoreShield);
-  if (canShan) {
-    // 护驾（曹操·主公技）：目标是主公时先问是否求援（M14）
+  // 护驾（曹操·主公技）：自己有闪时求援可省自己的牌；自己没闪时求援是唯一的活路——
+  // 两种情形都要先问（M14 初版只接了前者，"没闪等盟友救"的主场景直接判定命中，属 bug）
+  const hujiaAids = aidCandidates(s, target.id, 'hujia');
+  if (canShan || hujiaAids.length > 0) {
     askLordFirst(s, {
       kind: 'respondShan',
       playerId: target.id,
@@ -1554,7 +1558,7 @@ function stepTrick(s: GameState, f: TrickFrame): void {
       }
       return;
     case 'nanman':
-      if (hasShaMaterial(target)) {
+      if (hasShaMaterial(target) || aidCandidates(s, target.id, 'jijiang').length > 0) {
         askLordFirst(s, { kind: 'respondSha', playerId: target.id, frameId: f.id, trickSub: f.sub, trickTargetId: target.id }, 'jijiang');
       } else {
         advanceTarget(s, f);
@@ -1562,7 +1566,11 @@ function stepTrick(s: GameState, f: TrickFrame): void {
       }
       return;
     case 'wanjian':
-      if (target.hand.some(c => canActAsShan(target, c)) || target.equipment.shield) {
+      if (
+        target.hand.some(c => canActAsShan(target, c)) ||
+        target.equipment.shield ||
+        aidCandidates(s, target.id, 'hujia').length > 0
+      ) {
         askLordFirst(s, { kind: 'respondShan', playerId: target.id, frameId: f.id, trickSub: f.sub, trickTargetId: target.id }, 'hujia');
       } else {
         advanceTarget(s, f);
@@ -1623,7 +1631,7 @@ function stepTrick(s: GameState, f: TrickFrame): void {
     }
     case 'juedou': {
       const who = s.players[f.duelTurn]!;
-      if (hasShaMaterial(who)) {
+      if (hasShaMaterial(who) || aidCandidates(s, who.id, 'jijiang').length > 0) {
         askLordFirst(s, { kind: 'respondSha', playerId: who.id, frameId: f.id, trickSub: f.sub, trickTargetId: f.targets[0] }, 'jijiang');
       } else {
         const opponent = who.id === f.userId ? f.targets[0]! : f.userId;

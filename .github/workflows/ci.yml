@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      # 120 局 AI 自战：终局 / 卡牌守恒 / 同 seed 可复现（与本地 npm run smoke 同参）
+      - name: 冒烟回归
+        run: npm run smoke
+
+      # 40 局逐技回归 + 23 项构造局面（M17 起 40 项技能全部有断言）
+      - name: 逐技回归
+        run: npm run regression -- 40
+
+      - name: 构建
+        run: npm run build
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 7

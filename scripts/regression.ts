@@ -5,7 +5,7 @@
 import { ruleAction } from '../src/ai/rule';
 import { hpOf, setup } from '../src/engine/setup';
 import { hasSkill } from '../src/engine/skills';
-import { TOTAL_CARDS, advance, step } from '../src/engine/step';
+import { TOTAL_CARDS, advance, inShaRange, seatDistance, step } from '../src/engine/step';
 import { GENERAL_SKILLS } from '../src/engine/types';
 import { viewOf } from '../src/engine/view';
 import type { Action, GameState, Inquiry } from '../src/engine/types';
@@ -453,6 +453,128 @@ console.log('\n[6] 构造局面');
   check(
     '【连营】发动后摸一张',
     cur.log.some(e => e.t === 'skill' && e.sub === 'lianying') && cur.players[lx.id]!.hand.length >= 1,
+  );
+}
+
+// —— M17：最后 6 个无断言技能的构造局面 ——
+{
+  // 空城（诸葛亮·锁定）：无手牌时不能成为【杀】/【决斗】的目标（引擎必须拒绝）
+  const s = setup(1);
+  const me = s.players[0]!;
+  me.hand = [{ id: 9901, sub: 'sha', suit: '♠', rank: 3 }];
+  const kc = s.players[1]!;
+  kc.general = 'zhugeliang';
+  kc.hand = [];
+  s.pending = { kind: 'play', playerId: me.id };
+  let threw = false;
+  try {
+    step(s, { type: 'playSha', cardId: 9901, targetId: kc.id });
+  } catch {
+    threw = true;
+  }
+  check('【空城】无手牌的诸葛亮不能被【杀】指定（引擎拒绝）', threw);
+}
+{
+  // 马术（马超·锁定）：距离计算 -1 → 射程内
+  const s = setup(1);
+  const mc = s.players[0]!;
+  mc.general = 'machao';
+  mc.equipment = {}; // 无武器（射程 1）
+  // 五人环座：seat 0 到 seat 2 的基础距离为 2；马术 -1 后为 1 → 可杀
+  check(
+    '【马术】马超对距离 2 的目标实际距离为 1',
+    seatDistance(s, mc.id, 2) === 1 && inShaRange(s, mc.id, 2),
+  );
+}
+{
+  // 奇才（黄月英·锁定）：顺手牵羊无距离限制
+  const s = setup(1);
+  const hyy = s.players[0]!;
+  hyy.general = 'huangyueying';
+  hyy.hand = [{ id: 9911, sub: 'shunshou', suit: '♠', rank: 3 }];
+  const far = s.players[2]!; // 距离 2，无奇才时顺手牵羊非法
+  far.hand = [{ id: 9912, sub: 'tao', suit: '♥', rank: 4 }];
+  s.pending = { kind: 'play', playerId: hyy.id };
+  const s2 = step(s, { type: 'playTrick', cardId: 9911, targetId: far.id });
+  check(
+    '【奇才】距离 2 的顺手牵羊合法且生效（目标被夺空，集智另摸一张）',
+    s2.players[far.id]!.hand.length === 0 &&
+      s2.players[hyy.id]!.hand.length >= 1 &&
+      s2.log.some(e => e.t === 'skill' && e.sub === 'jizhi'),
+  );
+}
+{
+  // 护驾（曹操·主公技）：曹操无闪、魏盟友有闪 → 求援后盟友代出，曹操不掉血
+  const s = setup(1);
+  const cc = s.players[0]!; // seat 0 恒为主公
+  cc.general = 'caocao';
+  cc.hand = [];
+  const ally = s.players[1]!; // 魏势力（换司马懿）
+  ally.general = 'simayi';
+  ally.hand = [{ id: 9921, sub: 'shan', suit: '♥', rank: 4 }];
+  const atk = s.players[4]!; // seat 4 与主公相邻（距离 1），否则杀被射程校验拒绝
+  atk.hand = [{ id: 9922, sub: 'sha', suit: '♠', rank: 3 }];
+  for (const idx of [2, 3]) s.players[idx]!.hand = []; // 排除其他人有无懈/闪
+  s.pending = { kind: 'play', playerId: atk.id };
+  let cur = step(s, { type: 'playSha', cardId: 9922, targetId: cc.id });
+  const hpBefore = cur.players[cc.id]!.hp;
+  // 曹操收到 lordSkill 询问（求援）→ 同意 → 魏盟友收到代出闪询问 → 出闪
+  const asked = cur.pending?.kind === 'lordSkill' && (cur.pending as Inquiry).sub === 'hujia';
+  if (asked) cur = step(cur, { type: 'respondLord', use: true });
+  const aidAsked = cur.pending?.kind === 'respondShan' && (cur.pending as Inquiry).aidForId === cc.id;
+  if (aidAsked) cur = step(cur, { type: 'respondShan', cardId: 9921 });
+  check(
+    '【护驾】没闪也能求援，盟友代出后曹操不掉血',
+    asked && aidAsked && cur.players[cc.id]!.hp === hpBefore && cur.players[ally.id]!.hand.length === 0,
+    `asked=${asked} aidAsked=${aidAsked} hp=${cur.players[cc.id]!.hp}/${hpBefore}`,
+  );
+}
+{
+  // 激将（刘备·主公技）：南蛮入侵时刘备无杀、蜀盟友有杀 → 盟友代出，刘备不掉血
+  const s = setup(1);
+  const lb = s.players[0]!;
+  lb.general = 'liubei';
+  lb.hand = [];
+  const ally = s.players[1]!;
+  ally.general = 'guanyu'; // 蜀
+  ally.hand = [{ id: 9931, sub: 'sha', suit: '♠', rank: 3 }];
+  const atk = s.players[2]!;
+  atk.hand = [{ id: 9932, sub: 'nanman', suit: '♠', rank: 7 }];
+  for (const idx of [3, 4]) s.players[idx]!.hand = [];
+  s.pending = { kind: 'play', playerId: atk.id };
+  let cur = step(s, { type: 'playTrick', cardId: 9932 });
+  const hpBefore = cur.players[lb.id]!.hp;
+  const asked = cur.pending?.kind === 'lordSkill' && (cur.pending as Inquiry).sub === 'jijiang';
+  if (asked) cur = step(cur, { type: 'respondLord', use: true });
+  const aidAsked = cur.pending?.kind === 'respondSha' && (cur.pending as Inquiry).aidForId === lb.id;
+  if (aidAsked) cur = step(cur, { type: 'respondSha', cardId: 9931 });
+  check(
+    '【激将】南蛮时无杀可求援，盟友代出后刘备不掉血',
+    asked && aidAsked && cur.players[lb.id]!.hp === hpBefore,
+    `asked=${asked} aidAsked=${aidAsked} hp=${cur.players[lb.id]!.hp}/${hpBefore}`,
+  );
+}
+{
+  // 救援（孙权·主公技）：吴势力角色用桃 → 额外回复 1 点（共 2 点）
+  const s = setup(1);
+  const sq = s.players[0]!;
+  sq.general = 'sunquan';
+  sq.maxHp = 4;
+  sq.hp = 0; // 濒死
+  const wu = s.players[1]!;
+  wu.general = 'huanggai'; // 吴
+  wu.hand = [{ id: 9941, sub: 'tao', suit: '♥', rank: 4 }];
+  const notWu = s.players[2]!;
+  notWu.general = 'lvbu'; // 群（对照组）
+  notWu.hand = [];
+  // 直接构造濒死求桃询问（与 askNextTao 的产物一致）；测点是救援的 +2 回复，
+  // 求桃的座次顺序属引擎既有行为，自战里每天都在跑
+  s.pending = { kind: 'respondTao', playerId: wu.id, dyingId: sq.id, askedIds: [] };
+  const s2 = step(s, { type: 'respondTao', cardId: 9941 });
+  check(
+    '【救援】吴势力角色用桃 → 主公回复 2 点',
+    s2.players[sq.id]!.hp === 2 && s2.log.some(e => e.t === 'skill' && e.sub === 'jiuyuan'),
+    `hp=${s2.players[sq.id]!.hp}`,
   );
 }
 
