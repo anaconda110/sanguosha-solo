@@ -1,7 +1,7 @@
 // 武将技判定（ADR-0010）：引擎与 AI 共用的技能静态查询。
 // 用牌转换类（武圣/龙胆/倾国/国色/奇袭）以 canActAs* / trickAsSub 形式暴露；
 // 触发/主动/锁定技由 step.ts 消费。
-import { GENERAL_SKILLS } from './types';
+import { GENERAL_SKILLS, TRICK_SUBS } from './types';
 import type { Card, CardSub, PlayerState, SkillSub } from './types';
 
 export function hasSkill(p: PlayerState, sub: SkillSub): boolean {
@@ -52,8 +52,3 @@ export function asTrickSub(p: PlayerState, c: Card): CardSub | null {
 }
 
 const CARD_KIND_TRICK = (c: Card) => TRICK_SUBS.has(c.sub);
-const TRICK_SUBS = new Set<CardSub>([
-  'wuzhong', 'guohe', 'shunshou', 'juedou', 'nanman', 'wanjian', 'taoyuan', 'wuxie',
-  'wugu', 'jiedao',
-  'lebusi', 'bingliang', 'shandian',
-]);

@@ -1,4 +1,13 @@
 // 领域术语见项目根 CONTEXT.md；架构决策见 docs/adr/。
+//
+// 本模块只保留 TypeScript 类型定义；运行时常量数据（M23 内容数据化）
+// 迁至 src/content/**，在此 re-export——既有 import（engine/ai/UI/tests）
+// 无需改动，引擎也保持不直接依赖内容层。
+
+export { CARD_INFO, TRICK_SUBS } from '../content/cards';
+export { SKILL_INFO } from '../content/skills';
+export { GENERAL_SEX, FACTION_NAMES, GENERAL_FACTION, GENERAL_SKILLS, GENERAL_INFO } from '../content/generals';
+export { IDENTITY_NAMES } from '../content/identity';
 
 export type Suit = '♠' | '♥' | '♣' | '♦';
 export type CardKind = 'basic' | 'trick' | 'equip';
@@ -22,36 +31,6 @@ export interface CardInfo {
   desc: string;
 }
 
-export const CARD_INFO: Record<CardSub, CardInfo> = {
-  sha: { kind: 'basic', display: '杀', desc: '对攻击范围内一名角色造成 1 点伤害；每回合限一次（连弩/咆哮除外）' },
-  shan: { kind: 'basic', display: '闪', desc: '抵消一次【杀】或【万箭齐发】；只能在响应时打出' },
-  tao: { kind: 'basic', display: '桃', desc: '回复 1 点体力；仅自己回合或有人濒死时可用' },
-  wuzhong: { kind: 'trick', display: '无中生有', desc: '摸两张牌' },
-  guohe: { kind: 'trick', display: '过河拆桥', desc: '弃置一名角色区域里的一张牌' },
-  shunshou: { kind: 'trick', display: '顺手牵羊', desc: '获得距离 1 以内一名角色的一张牌' },
-  juedou: { kind: 'trick', display: '决斗', desc: '与目标轮流打出【杀】，未出者受 1 点伤害' },
-  nanman: { kind: 'trick', display: '南蛮入侵', desc: '其他所有角色需打出【杀】，否则受 1 点伤害' },
-  wanjian: { kind: 'trick', display: '万箭齐发', desc: '其他所有角色需打出【闪】，否则受 1 点伤害' },
-  taoyuan: { kind: 'trick', display: '桃园结义', desc: '所有存活角色各回复 1 点体力' },
-  wuxie: { kind: 'trick', display: '无懈可击', desc: '抵消一张锦囊对一名目标的效果；可被反无懈' },
-  wugu: { kind: 'trick', display: '五谷丰登', desc: '亮出等同人数的牌，每名角色依次选一张' },
-  jiedao: { kind: 'trick', display: '借刀杀人', desc: '令装备武器者对指定目标出【杀】，否则武器归你' },
-  lebusi: { kind: 'trick', display: '乐不思蜀', desc: '延时：目标判定阶段判定，非红桃则跳过出牌阶段' },
-  bingliang: { kind: 'trick', display: '兵粮寸断', desc: '延时：目标判定阶段判定，草花则跳过摸牌阶段' },
-  shandian: { kind: 'trick', display: '闪电', desc: '延时：判定 ♠2-9 受 3 点伤害，否则移给下家' },
-  liannu: { kind: 'equip', display: '诸葛连弩', range: 1, desc: '武器·射程1：出【杀】不限次数' },
-  qinggang: { kind: 'equip', display: '青釭剑', range: 2, desc: '武器·射程2：你的【杀】无视目标防具' },
-  cixiong: { kind: 'equip', display: '雌雄双股剑', range: 2, desc: '武器·射程2：对异性目标，其弃 1 手牌或你摸 1 张' },
-  qinglong: { kind: 'equip', display: '青龙偃月刀', range: 3, desc: '武器·射程3：【杀】被闪后可立即再杀' },
-  zhangba: { kind: 'equip', display: '丈八蛇矛', range: 3, desc: '武器·射程3：两张手牌可当【杀】使用或打出' },
-  guanshi: { kind: 'equip', display: '贯石斧', range: 3, desc: '武器·射程3：【杀】被闪后可弃 2 张牌强制命中' },
-  fangtian: { kind: 'equip', display: '方天画戟', range: 4, desc: '武器·射程4：【杀】为最后手牌时可指定至多 3 个目标' },
-  qilin: { kind: 'equip', display: '麒麟弓', range: 5, desc: '武器·射程5：【杀】命中后弃置目标一匹坐骑' },
-  bagua: { kind: 'equip', display: '八卦阵', desc: '防具：需【闪】时可判定，红色视为打出【闪】' },
-  jia1ma: { kind: 'equip', display: '+1马', desc: '其他角色计算到你的距离 +1' },
-  jian1ma: { kind: 'equip', display: '-1马', desc: '你计算到其他角色的距离 -1' },
-};
-
 export interface Card {
   id: number;
   sub: CardSub;
@@ -62,13 +41,6 @@ export interface Card {
 }
 
 export type Identity = 'zhu' | 'zhong' | 'fan' | 'nei';
-
-export const IDENTITY_NAMES: Record<Identity, string> = {
-  zhu: '主公',
-  zhong: '忠臣',
-  fan: '反贼',
-  nei: '内奸',
-};
 
 /** 武将；技能系统见 skills.ts 与 ADR-0010 */
 export type GeneralSub =
@@ -105,118 +77,11 @@ export interface SkillInfo {
   desc: string;
 }
 
-export const SKILL_INFO: Record<SkillSub, SkillInfo> = {
-  wusheng: { display: '武圣', kind: 'use', desc: '你可以将一张红色牌当【杀】使用或打出' },
-  paoxiao: { display: '咆哮', kind: 'lock', desc: '你使用【杀】无次数限制' },
-  longdan: { display: '龙胆', kind: 'use', desc: '你可以将【杀】当【闪】、【闪】当【杀】使用或打出' },
-  jianxiong: { display: '奸雄', kind: 'trigger', desc: '你受到伤害后，可以获得造成伤害的牌' },
-  fankui: { display: '反馈', kind: 'trigger', desc: '你受到伤害后，可以获得伤害来源的一张牌' },
-  guicai: { display: '鬼才', kind: 'trigger', desc: '判定牌生效前，你可以打出一张手牌替换之' },
-  kurou: { display: '苦肉', kind: 'active', desc: '出牌阶段，你可以失去1点体力，摸两张牌' },
-  wushuang: { display: '无双', kind: 'lock', desc: '你使用【杀】需两张【闪】响应；与你【决斗】需打出两张【杀】' },
-  xiaoji: { display: '枭姬', kind: 'trigger', desc: '当你失去装备区里的一张牌后，你可以摸两张牌' },
-  lijian: { display: '离间', kind: 'active', desc: '出牌阶段限一次，你可以弃置一张手牌并指定两名男性角色，视为前者对后者使用一张【决斗】' },
-  biyue: { display: '闭月', kind: 'trigger', desc: '结束阶段，你可以摸一张牌' },
-  guanxing: { display: '观星', kind: 'active', desc: '准备阶段，你可以观看牌堆顶的X张牌（X为存活角色数），将其中任意牌置于牌堆顶，其余置于牌堆底' },
-  kongcheng: { display: '空城', kind: 'lock', desc: '锁定技，若你没有手牌，你不能成为【杀】和【决斗】的目标' },
-  luoshen: { display: '洛神', kind: 'trigger', desc: '准备阶段，你可以进行判定：若结果为黑色，你获得此判定牌并可以继续判定' },
-  qingguo: { display: '倾国', kind: 'use', desc: '你可以将一张黑色手牌当【闪】使用或打出' },
-  guose: { display: '国色', kind: 'use', desc: '你可以将一张方块牌当【乐不思蜀】使用' },
-  liuli: { display: '流离', kind: 'trigger', desc: '当你成为【杀】的目标时，你可以弃置一张手牌并转移给距离你1以内的一名其他男性角色' },
-  qixi: { display: '奇袭', kind: 'use', desc: '你可以将一张黑色牌当【过河拆桥】使用' },
-  mashu: { display: '马术', kind: 'lock', desc: '锁定技，你计算与其他角色的距离时始终-1' },
-  tieji: { display: '铁骑', kind: 'trigger', desc: '当你使用【杀】指定目标后，你可以进行判定：若结果为红色，此【杀】不可被【闪】响应' },
-  ganglie: { display: '刚烈', kind: 'trigger', desc: '当你受到伤害后，你可以进行判定：若结果非红桃，伤害来源受到1点伤害' },
-  zhiheng: { display: '制衡', kind: 'active', desc: '出牌阶段限一次，你可以弃置任意张手牌，然后摸等量的牌' },
-  rende: { display: '仁德', kind: 'active', desc: '出牌阶段限一次，你可以将任意张手牌交给一名其他角色，若给出的牌数不少于两张，你回复1点体力' },
-  qingnang: { display: '青囊', kind: 'active', desc: '出牌阶段限一次，你可以弃置一张手牌并选择一名已受伤的角色，其回复1点体力' },
-  jijiu: { display: '急救', kind: 'use', desc: '你的回合外，你可以将一张红色牌当【桃】使用' },
-  yingzi: { display: '英姿', kind: 'lock', desc: '锁定技，摸牌阶段，你多摸一张牌' },
-  fanjian: { display: '反间', kind: 'active', desc: '出牌阶段限一次，你可以令一名其他角色选择一种花色，然后你展示一张手牌并交给其；若其选择的花色与你展示的牌不同，其受到你造成的1点伤害' },
-  hujia: { display: '护驾', kind: 'lord', desc: '主公技，当你需要使用或打出一张【闪】时，你可以令一名其他魏势力角色打出一张【闪】（视为由你打出）' },
-  jijiang: { display: '激将', kind: 'lord', desc: '主公技，当你需要使用或打出一张【杀】时，你可以令一名其他蜀势力角色打出一张【杀】（视为由你打出）' },
-  jiuyuan: { display: '救援', kind: 'lord', desc: '主公技，其他吴势力角色对你使用【桃】时，你额外回复1点体力' },
-  tuxi: { display: '突袭', kind: 'trigger', desc: '摸牌阶段，你可以放弃摸牌，改为获得至多两名其他角色的各一张手牌' },
-  luoyi: { display: '裸衣', kind: 'trigger', desc: '摸牌阶段，你可以少摸一张牌；若如此做，本回合你使用【杀】或【决斗】造成的伤害+1' },
-  tiandu: { display: '天妒', kind: 'trigger', desc: '你的判定牌生效后，你可以获得之' },
-  yiji: { display: '遗计', kind: 'trigger', desc: '你每受到1点伤害后，可以摸两张牌，然后将其中任意张交给任意角色' },
-  jizhi: { display: '集智', kind: 'trigger', desc: '当你使用非延时锦囊牌时，你可以摸一张牌' },
-  qicai: { display: '奇才', kind: 'lock', desc: '锁定技，你使用锦囊牌无距离限制' },
-  keji: { display: '克己', kind: 'lock', desc: '若你未于出牌阶段使用或打出过【杀】，你可以跳过弃牌阶段' },
-  qianxun: { display: '谦逊', kind: 'lock', desc: '锁定技，你不能成为【顺手牵羊】和【乐不思蜀】的目标' },
-  lianying: { display: '连营', kind: 'trigger', desc: '当你失去最后一张手牌时，你可以摸一张牌' },
-  jieyin: { display: '结姻', kind: 'active', desc: '出牌阶段限一次，你可以弃置两张手牌并选择一名已受伤的男性角色，你与其各回复1点体力' },
-};
-
 /** 性别（雌雄双股剑 / 离间依赖） */
 export type Sex = 'm' | 'f';
-export const GENERAL_SEX: Record<GeneralSub, Sex> = {
-  baiban: 'm', guanyu: 'm', zhangfei: 'm', zhaoyun: 'm',
-  caocao: 'm', simayi: 'm', huanggai: 'm', zhouyu: 'm', lvbu: 'm',
-  sunshangxiang: 'f', diaochan: 'f',
-  zhugeliang: 'm', zhenji: 'f',
-  dajiao: 'f', ganning: 'm',
-  machao: 'm', sunquan: 'm', xiahoudun: 'm', liubei: 'm', huatuo: 'm',
-  zhangliao: 'm', xuchu: 'm', guojia: 'm', huangyueying: 'f', lvmeng: 'm', luxun: 'm',
-};
 
 /** 势力（主公技依赖）：魏/蜀/吴/群 */
 export type Faction = 'wei' | 'shu' | 'wu' | 'qun';
-export const FACTION_NAMES: Record<Faction, string> = { wei: '魏', shu: '蜀', wu: '吴', qun: '群' };
-export const GENERAL_FACTION: Record<GeneralSub, Faction> = {
-  baiban: 'qun',
-  caocao: 'wei', simayi: 'wei', xiahoudun: 'wei', zhangliao: 'wei', xuchu: 'wei', guojia: 'wei',
-  liubei: 'shu', guanyu: 'shu', zhangfei: 'shu', zhaoyun: 'shu', zhugeliang: 'shu', machao: 'shu', huangyueying: 'shu',
-  sunquan: 'wu', zhouyu: 'wu', huanggai: 'wu', sunshangxiang: 'wu', dajiao: 'wu', ganning: 'wu', lvmeng: 'wu', luxun: 'wu',
-  diaochan: 'qun', lvbu: 'qun', zhenji: 'qun', huatuo: 'qun',
-};
-
-export const GENERAL_SKILLS: Record<GeneralSub, SkillSub[]> = {
-  baiban: [],
-  guanyu: ['wusheng'],
-  zhangfei: ['paoxiao'],
-  zhaoyun: ['longdan'],
-  caocao: ['jianxiong', 'hujia'],
-  simayi: ['guicai', 'fankui'],
-  huanggai: ['kurou'],
-  zhouyu: ['yingzi', 'fanjian'],
-  lvbu: ['wushuang'],
-  sunshangxiang: ['xiaoji', 'jieyin'],
-  diaochan: ['lijian', 'biyue'],
-  zhugeliang: ['guanxing', 'kongcheng'],
-  zhenji: ['luoshen', 'qingguo'],
-  dajiao: ['guose', 'liuli'],
-  ganning: ['qixi'],
-  machao: ['mashu', 'tieji'],
-  sunquan: ['zhiheng', 'jiuyuan'],
-  xiahoudun: ['ganglie'],
-  liubei: ['rende', 'jijiang'],
-  huatuo: ['qingnang', 'jijiu'],
-  zhangliao: ['tuxi'],
-  xuchu: ['luoyi'],
-  guojia: ['tiandu', 'yiji'],
-  huangyueying: ['jizhi', 'qicai'],
-  lvmeng: ['keji'],
-  luxun: ['qianxun', 'lianying'],
-};
-
-export const GENERAL_INFO: Record<GeneralSub, { display: string; skill: string }> = Object.fromEntries(
-  (Object.keys(GENERAL_SKILLS) as GeneralSub[]).map(g => [
-    g,
-    {
-      display: {
-        baiban: '白板', guanyu: '关羽', zhangfei: '张飞', zhaoyun: '赵云',
-        caocao: '曹操', simayi: '司马懿', huanggai: '黄盖', zhouyu: '周瑜', lvbu: '吕布',
-        sunshangxiang: '孙尚香', diaochan: '貂蝉',
-        zhugeliang: '诸葛亮', zhenji: '甄姬',
-        dajiao: '大乔', ganning: '甘宁',
-        machao: '马超', sunquan: '孙权', xiahoudun: '夏侯惇', liubei: '刘备', huatuo: '华佗',
-        zhangliao: '张辽', xuchu: '许褚', guojia: '郭嘉', huangyueying: '黄月英', lvmeng: '吕蒙', luxun: '陆逊',
-      }[g],
-      skill: GENERAL_SKILLS[g].map(s => SKILL_INFO[s].display).join('·'),
-    },
-  ]),
-) as Record<GeneralSub, { display: string; skill: string }>;
 
 export type Phase = 'judge' | 'draw' | 'play' | 'discard';
 
