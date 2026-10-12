@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
     "regression": "tsx scripts/regression.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e:guard": "node e2e/freeze-guard.mjs",
+    "e2e:interaction": "node e2e/interaction.mjs"
   },
   "dependencies": {
     "vue": "^3.5.13"

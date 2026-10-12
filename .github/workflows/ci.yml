@@ -6,6 +6,24 @@ on:
   pull_request:
 
 jobs:
+  # 单测层（M21d vitest 基建）：与下方 test job 并行跑，互不依赖。
+  # e2e 守护（e2e/freeze-guard.mjs）不进 CI——需要浏览器环境，见 docs/adr/0027-e2e-guard.md 与 e2e/README.md。
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 单测（vitest run）
+        run: npm test
+
   test:
     runs-on: ubuntu-latest
     steps:
