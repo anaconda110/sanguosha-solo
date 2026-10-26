@@ -1,11 +1,22 @@
 // persist.ts：localStorage 存档（M15）——往返、坏数据容错、配额溢出截断 log 退化。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearSave, hasSave, loadSave, saveGame } from '../src/persist';
+import {
+  SAVE_SLOT_IDS,
+  clearSave,
+  deleteSaveSlot,
+  hasSave,
+  hasSaveSlot,
+  listSaveSlots,
+  loadSave,
+  loadSaveSlot,
+  saveGame,
+  saveToSlot,
+} from '../src/persist';
 import type { GameState } from '../src/engine/types';
 import { makePlayer } from './helpers';
 
 /** Map 背书的 localStorage 桩：可模拟配额溢出（setItem 抛 QuotaExceededError） */
-function makeLS(opts: { failFirstSet?: boolean; failAllSet?: boolean } = {}) {
+function makeLS(opts: { failFirstSet?: boolean; failAllSet?: boolean; failAfterSets?: number } = {}) {
   const store = new Map<string, string>();
   let setCalls = 0;
   return {
@@ -13,7 +24,11 @@ function makeLS(opts: { failFirstSet?: boolean; failAllSet?: boolean } = {}) {
     getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
     setItem: (k: string, v: string) => {
       setCalls += 1;
-      if (opts.failAllSet || (opts.failFirstSet && setCalls === 1)) {
+      if (
+        opts.failAllSet ||
+        (opts.failFirstSet && setCalls === 1) ||
+        (opts.failAfterSets != null && setCalls > opts.failAfterSets)
+      ) {
         throw new DOMException('quota exceeded', 'QuotaExceededError');
       }
       store.set(k, v);
@@ -108,5 +123,93 @@ describe('clearSave', () => {
     clearSave();
     expect(hasSave()).toBe(false);
     expect(loadSave()).toBeNull();
+  });
+});
+
+
+describe('三槽手动存档', () => {
+  it('默认三个槽位独立增删读写，摘要与读取结果一致', () => {
+    expect(SAVE_SLOT_IDS).toEqual(['1', '2', '3']);
+
+    for (const [index, id] of SAVE_SLOT_IDS.entries()) {
+      const state = makeState([{ t: 'draw', player: index, n: index + 1 }]);
+      state.seed = 100 + index;
+      expect(saveToSlot(id, { seed: state.seed, humanId: index, spectate: index === 2, state })).toBe(true);
+    }
+
+    const slots = listSaveSlots();
+    expect(slots.map(slot => slot.id)).toEqual(['1', '2', '3']);
+    expect(slots.map(slot => slot.exists)).toEqual([true, true, true]);
+    expect(slots.map(slot => slot.seed)).toEqual([100, 101, 102]);
+    expect(slots.map(slot => slot.humanId)).toEqual([0, 1, 2]);
+    expect(slots.map(slot => slot.spectate)).toEqual([false, false, true]);
+    expect(loadSaveSlot('1')!.state.log).toEqual([{ t: 'draw', player: 0, n: 1 }]);
+    expect(loadSaveSlot('3')!.state.log).toEqual([{ t: 'draw', player: 2, n: 3 }]);
+
+    deleteSaveSlot('2');
+    expect(hasSaveSlot('2')).toBe(false);
+    expect(loadSaveSlot('2')).toBeNull();
+    expect(loadSaveSlot('1')).not.toBeNull();
+    expect(loadSaveSlot('3')).not.toBeNull();
+    expect(listSaveSlots().map(slot => slot.exists)).toEqual([true, false, true]);
+  });
+
+  it('空槽与损坏槽都表现为空槽，菜单读取不抛异常', () => {
+    expect(hasSaveSlot('1')).toBe(false);
+    expect(loadSaveSlot('1')).toBeNull();
+    expect(listSaveSlots().every(slot => !slot.exists)).toBe(true);
+
+    localStorage.setItem('sanguosha-solo:slot:1', '{broken');
+    localStorage.setItem('sanguosha-solo:slot:2', JSON.stringify({ version: 999, state: { players: [] } }));
+    localStorage.setItem('sanguosha-solo:slot:3', JSON.stringify({ version: 1, state: {} }));
+
+    expect(() => listSaveSlots()).not.toThrow();
+    expect(listSaveSlots().map(slot => slot.exists)).toEqual([false, false, false]);
+    expect(loadSaveSlot('1')).toBeNull();
+    expect(hasSaveSlot('2')).toBe(true); // has 只检查键存在；具体内容由 load 容错
+  });
+
+  it('手动槽与自动续局槽互不影响', () => {
+    const auto = makeState([{ t: 'draw', player: 0, n: 2 }]);
+    auto.seed = 11;
+    saveGame({ seed: 11, humanId: 0, spectate: false, state: auto });
+    expect(saveToSlot('1', { seed: 11, humanId: 0, spectate: false, state: auto })).toBe(true);
+
+    clearSave();
+    expect(loadSave()).toBeNull();
+    expect(loadSaveSlot('1')!.seed).toBe(11);
+
+    saveGame({ seed: 12, humanId: 1, spectate: true, state: { ...auto, seed: 12 } });
+    deleteSaveSlot('1');
+    expect(loadSaveSlot('1')).toBeNull();
+    expect(loadSave()!.seed).toBe(12);
+  });
+
+  it('配额失败返回 false，旧槽内容保持不变', () => {
+    vi.stubGlobal('localStorage', makeLS({ failAfterSets: 1 }));
+    const first = makeState([{ t: 'draw', player: 0, n: 1 }]);
+    first.seed = 21;
+    expect(saveToSlot('1', { seed: 21, humanId: 0, spectate: false, state: first })).toBe(true);
+    const before = localStorage.getItem('sanguosha-solo:slot:1');
+
+    const second = makeState([{ t: 'draw', player: 1, n: 2 }]);
+    second.seed = 22;
+    expect(saveToSlot('1', { seed: 22, humanId: 1, spectate: true, state: second })).toBe(false);
+
+    expect(localStorage.getItem('sanguosha-solo:slot:1')).toBe(before);
+    expect(loadSaveSlot('1')!.seed).toBe(21);
+    expect(loadSaveSlot('1')!.state.log).toEqual([{ t: 'draw', player: 0, n: 1 }]);
+  });
+
+  it('手动槽首次溢出时截断 log 后成功，并完整保留 actionLog', () => {
+    vi.stubGlobal('localStorage', makeLS({ failFirstSet: true }));
+    const state = makeState(Array.from({ length: 500 }, (_, i) => ({ t: 'draw' as const, player: i, n: 2 })));
+    expect(saveToSlot('3', { seed: 31, humanId: 2, spectate: false, state })).toBe(true);
+
+    const loaded = loadSaveSlot('3');
+    expect(loaded).not.toBeNull();
+    expect(loaded!.state.log).toHaveLength(300);
+    expect(loaded!.state.log[0]).toEqual({ t: 'draw', player: 200, n: 2 });
+    expect(loaded!.state.actionLog).toEqual([{ type: 'endPlay' }]);
   });
 });

@@ -4,10 +4,12 @@
 // 依赖单向：interaction → game（读 view/pend、经 act 提交动作），绝不反向 import。
 // 重置纪律：act/resetUi 后由 game 经组合根回调 resetAll() 清空全部会话选择，
 // 清空顺序与原实现逐行一致（cancelSel → 各多选清空 → resetLijian）。
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref } from 'vue';
 import { hasAnyCard, inShaRange, seatDistance } from '../engine/step';
 import { CARD_INFO } from '../engine/types';
 import type { Card, CardSub, Suit } from '../engine/types';
+import { cardActionReason } from '../interaction/action-hints';
+import { disp } from './labels';
 import type { GameApi } from './useGame';
 
 export function useInteraction(deps: { game: GameApi }) {
@@ -45,24 +47,72 @@ export function useInteraction(deps: { game: GameApi }) {
 
   /** 悬停的座次 + 详情面板位置（跟随鼠标） */
   const hoverSeat = ref<number | null>(null);
+  /** 点击固定详情，避免触屏/键盘用户因指针离开而丢失信息 */
+  const seatDetailPinned = ref(false);
   const seatTipPos = ref({ x: 0, y: 0 });
+  let seatCloseTimer: number | null = null;
+  let clickSuppressTimer: number | null = null;
+
+  function clearSeatCloseTimer() {
+    if (seatCloseTimer == null) return;
+    window.clearTimeout(seatCloseTimer);
+    seatCloseTimer = null;
+  }
+  /** 让固定定位的详情面板始终留在视口内；高度取常见三技能卡片的保守值。 */
+  function placeSeatTip(clientX: number, clientY: number) {
+    const width = Math.min(310, window.innerWidth - 16);
+    const height = Math.min(300, window.innerHeight - 16);
+    const x = clientX + 14 + width > window.innerWidth - 8 ? clientX - width - 14 : clientX + 14;
+    const y = clientY + 10 + height > window.innerHeight - 8 ? window.innerHeight - height - 8 : clientY + 10;
+    seatTipPos.value = {
+      x: Math.max(8, x),
+      y: Math.max(8, y),
+    };
+  }
   function seatHoverEnter(pid: number, ev: MouseEvent) {
+    clearSeatCloseTimer();
+    if (seatDetailPinned.value) return;
     hoverSeat.value = pid;
-    seatTipPos.value = { x: ev.clientX + 14, y: ev.clientY + 10 };
+    placeSeatTip(ev.clientX, ev.clientY);
   }
   function seatHoverMove(ev: MouseEvent) {
-    if (hoverSeat.value == null) return;
-    seatTipPos.value = { x: ev.clientX + 14, y: ev.clientY + 10 };
+    if (seatDetailPinned.value || hoverSeat.value == null) return;
+    placeSeatTip(ev.clientX, ev.clientY);
   }
   function seatHoverLeave() {
+    if (seatDetailPinned.value || hoverSeat.value == null) return;
+    clearSeatCloseTimer();
+    seatCloseTimer = window.setTimeout(() => {
+      seatCloseTimer = null;
+      if (!seatDetailPinned.value) hoverSeat.value = null;
+    }, 220);
+  }
+  /** 指针从座次移入详情浮层时取消延迟关闭。 */
+  function seatDetailEnter() {
+    clearSeatCloseTimer();
+  }
+  function openSeatDetail(pid: number, ev?: MouseEvent) {
+    clearSeatCloseTimer();
+    seatDetailPinned.value = true;
+    hoverSeat.value = pid;
+    if (ev) placeSeatTip(ev.clientX, ev.clientY);
+  }
+  function closeSeatDetail() {
+    clearSeatCloseTimer();
+    seatDetailPinned.value = false;
     hoverSeat.value = null;
   }
 
   /** 拖拽出牌：按下手牌拖到可目标座次松手即出；点击选牌行为不变 */
   const drag = ref<{ card: Card; active: boolean; x: number; y: number; over: number | null } | null>(null);
   let dragStart = { x: 0, y: 0 };
+  function stopDragListeners() {
+    window.removeEventListener('pointermove', cardDragMove);
+    window.removeEventListener('pointerup', cardDragUp);
+  }
   function cardPointerDown(c: Card, ev: PointerEvent) {
     if (pend.value?.kind !== 'play' || spectate.value) return;
+    stopDragListeners();
     dragStart = { x: ev.clientX, y: ev.clientY };
     drag.value = { card: c, active: false, x: ev.clientX, y: ev.clientY, over: null };
     window.addEventListener('pointermove', cardDragMove);
@@ -78,15 +128,19 @@ export function useInteraction(deps: { game: GameApi }) {
     const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.seat');
     d.over = el ? Number((el as HTMLElement).dataset.pid) || null : null;
   }
-  function cardDragUp(ev: PointerEvent) {
-    window.removeEventListener('pointermove', cardDragMove);
+  function cardDragUp(_ev: PointerEvent) {
+    stopDragListeners();
     const d = drag.value;
     drag.value = null;
     if (!d) return;
     if (d.active && d.over != null && isTargetable(d.over)) {
       clickSuppressed = true; // 拖拽后的 click 不再触发选牌
-      onSeatClick(d.over);
-      setTimeout(() => (clickSuppressed = false), 0);
+      submitSeat(d.over);
+      if (clickSuppressTimer != null) window.clearTimeout(clickSuppressTimer);
+      clickSuppressTimer = window.setTimeout(() => {
+        clickSuppressTimer = null;
+        clickSuppressed = false;
+      }, 0);
     }
   }
 
@@ -96,10 +150,60 @@ export function useInteraction(deps: { game: GameApi }) {
   const targetingMode = computed(
     () =>
       !spectate.value &&
-      ((pend.value?.kind === 'play' && (!!selected.value || !!activeMode.value)) ||
+      ((pend.value?.kind === 'play' && (!!selected.value || !!activeMode.value || (lijianMode.value && !!lijianCard.value))) ||
         pend.value?.kind === 'tuxi' ||
         (pend.value?.kind === 'liuli' && !!liuliPick.value)),
   );
+
+  const selectedCard = computed(() => {
+    const id = selected.value?.cardId;
+    return id == null ? null : me.value?.hand.find(c => c.id === id) ?? null;
+  });
+
+  const selectedCardIds = computed(() => {
+    const ids = new Set<number>();
+    if (selected.value) ids.add(selected.value.cardId);
+    if (selected2.value) ids.add(selected2.value.id);
+    discardSel.value.forEach(id => ids.add(id));
+    guanshiSel.value.forEach(id => ids.add(id));
+    activeSel.value.forEach(id => ids.add(id));
+    guanxingPick.value.forEach(id => ids.add(id));
+    if (lijianCard.value) ids.add(lijianCard.value.id);
+    if (liuliPick.value) ids.add(liuliPick.value.id);
+    return ids;
+  });
+
+  const hasSelection = computed(() => selectedCardIds.value.size > 0 || !!activeMode.value || lijianMode.value);
+
+  const selectionLabel = computed(() => {
+    if (selected.value) {
+      const name = selectedCard.value ? disp(selectedCard.value.sub) : disp(selected.value.sub);
+      if (selected2.value) return `丈八蛇矛：已选【${name}】+【${disp(selected2.value.sub)}】，请选择目标`;
+      return `已选【${name}】，请选择目标`;
+    }
+    if (lijianCard.value) return `离间：已选【${disp(lijianCard.value.sub)}】，请选择两名男性角色`;
+    if (lijianMode.value) return '离间：请先点选一张要弃置的手牌';
+    if (liuliPick.value) return `流离：已选【${disp(liuliPick.value.sub)}】，请选择转移目标`;
+    if (discardSel.value.length) return `弃牌选择 ${discardSel.value.length}/${discardCount.value}`;
+    if (guanshiSel.value.length) return `贯石斧素材 ${guanshiSel.value.length}/2`;
+    if (activeSel.value.length) return `技能选择：已选 ${activeSel.value.length} 张`;
+    if (guanxingPick.value.length) return `观星：已选择 ${guanxingPick.value.length} 张`;
+    return '';
+  });
+
+  const interactionBreadcrumb = computed(() => {
+    if (spectate.value || !pend.value) return '';
+    if (pend.value.kind === 'play') {
+      if (selected.value) return '出牌阶段 › 已选牌 › 选择目标';
+      if (lijianMode.value) return lijianCard.value ? '出牌阶段 › 离间 › 选择目标' : '出牌阶段 › 离间 › 选择手牌';
+      if (activeMode.value) return `出牌阶段 › ${activeMode.value} › 选择手牌`;
+      return '出牌阶段 › 选择手牌';
+    }
+    if (pend.value.kind === 'discard') return `弃牌阶段 › ${discardSel.value.length}/${discardCount.value}`;
+    if (pend.value.kind === 'tuxi') return `突袭 › 选择目标 ${tuxiSel.value.length}/2`;
+    if (pend.value.kind === 'liuli') return liuliPick.value ? '流离 › 选择转移目标' : '流离 › 选择弃置手牌';
+    return `响应 › ${pend.value.kind}`;
+  });
 
   // —— 会话选择的重置 ——
   function resetLijian() {
@@ -157,53 +261,115 @@ export function useInteraction(deps: { game: GameApi }) {
   const discardCount = computed(() => view.value.pending?.count ?? 0);
   const canConfirmDiscard = computed(() => discardSel.value.length === discardCount.value);
 
-  function isTargetable(pid: number): boolean {
+  /** 返回 null 表示可选；返回文本表示当前不可选的原因。规则顺序与原 isTargetable 一致。 */
+  function isTargetUnavailableReason(pid: number): string | null {
+    const t = view.value.players[pid];
+    if (!t) return '无效座次';
     const sel = selected.value;
     if (activeMode.value === 'rende') {
-      const t = view.value.players[pid]!;
-      return activeSel.value.length > 0 && t.alive && pid !== humanId.value;
+      if (activeSel.value.length === 0) return '请先选择要交给其他角色的手牌';
+      if (!t.alive) return '已阵亡角色不能成为目标';
+      return pid === humanId.value ? '仁德不能交给自己' : null;
     }
     if (activeMode.value === 'qingnang') {
-      const t = view.value.players[pid]!;
-      return activeSel.value.length === 1 && t.alive && t.hp < t.maxHp;
+      if (activeSel.value.length !== 1) return '青囊需要先选择一张手牌';
+      if (!t.alive) return '已阵亡角色不能成为目标';
+      return t.hp >= t.maxHp ? '目标体力已满' : null;
     }
     if (activeMode.value === 'fanjian') {
-      const t = view.value.players[pid]!;
-      return activeSel.value.length === 1 && t.alive && pid !== humanId.value;
+      if (activeSel.value.length !== 1) return '反间需要先选择一张手牌';
+      if (!t.alive) return '已阵亡角色不能成为目标';
+      return pid === humanId.value ? '反间不能对自己发动' : null;
     }
     if (activeMode.value === 'jieyin') {
-      const t = view.value.players[pid]!;
-      return activeSel.value.length === 2 && t.alive && t.sex === 'm' && t.hp < t.maxHp;
+      if (activeSel.value.length !== 2) return '结姻需要先选择两张手牌';
+      if (!t.alive) return '已阵亡角色不能成为目标';
+      if (t.sex !== 'm') return '结姻只能选择男性角色';
+      return t.hp >= t.maxHp ? '目标体力已满' : null;
     }
     if (lijianMode.value && lijianCard.value) {
-      const t = view.value.players[pid]!;
-      return t.alive && t.id !== humanId.value && t.sex === 'm';
+      if (!t.alive) return '已阵亡角色不能成为目标';
+      if (t.id === humanId.value) return '离间不能选择自己';
+      return t.sex === 'm' ? null : '离间只能选择男性角色';
     }
     if (pend.value?.kind === 'liuli' && liuliPick.value) {
-      return (pend.value.liuliTo ?? []).includes(pid);
+      return (pend.value.liuliTo ?? []).includes(pid) ? null : '该角色不在流离可选范围内';
     }
     if (pend.value?.kind === 'tuxi') {
-      const t = view.value.players[pid]!;
-      return t.alive && pid !== humanId.value && (pend.value.tuxiTo ?? []).includes(pid);
+      if (!t.alive) return '已阵亡角色不能成为目标';
+      if (pid === humanId.value) return '突袭不能选择自己';
+      return (pend.value.tuxiTo ?? []).includes(pid) ? null : '该角色不在突袭可选范围内';
     }
-    if (!sel || pend.value?.kind !== 'play') return false;
-    const t = view.value.players[pid]!;
-    if (!t.alive || t.id === humanId.value) return false;
-    if (sel.sub === 'sha') return inShaRange(getState(), humanId.value, pid);
+    if (!sel || pend.value?.kind !== 'play') return '当前没有需要选择目标的牌';
+    if (!t.alive) return '已阵亡角色不能成为目标';
+    if (t.id === humanId.value) return '不能选择自己';
+    if (sel.sub === 'sha') return inShaRange(getState(), humanId.value, pid) ? null : '目标不在【杀】的攻击范围内';
     if (sel.sub === 'jiedao') {
       // 借刀：先选持武器者（不可选自己），再选其攻击范围内的杀目标
       if (jiedaoVictim.value == null) {
-        return t.alive && t.id !== humanId.value && !!getState().players[pid]!.equipment.weapon;
+        return getState().players[pid]!.equipment.weapon ? null : '该角色没有装备武器';
       }
-      return t.alive && t.id !== jiedaoVictim.value && inShaRange(getState(), jiedaoVictim.value, pid);
+      if (pid === jiedaoVictim.value) return '请选择另一名角色作为【杀】的目标';
+      return inShaRange(getState(), jiedaoVictim.value, pid) ? null : '目标不在持武器者的攻击范围内';
     }
     if (sel.sub === 'shunshou')
-      return hasAnyCard(getState().players[pid]!) && seatDistance(getState(), humanId.value, pid) <= 1;
-    if (sel.sub === 'lebusi') return !t.judgements.includes('lebusi');
+      return hasAnyCard(getState().players[pid]!) && seatDistance(getState(), humanId.value, pid) <= 1
+        ? null
+        : '顺手牵羊只能选择距离 1 以内且有牌的角色';
+    if (sel.sub === 'lebusi') return t.judgements.includes('lebusi') ? '目标判定区已有【乐不思蜀】' : null;
     if (sel.sub === 'bingliang')
-      return !t.judgements.includes('bingliang') && seatDistance(getState(), humanId.value, pid) <= 1;
+      return !t.judgements.includes('bingliang') && seatDistance(getState(), humanId.value, pid) <= 1
+        ? null
+        : '兵粮寸断只能选择距离 1 以内且判定区没有同类牌的角色';
     // guohe / juedou
-    return hasAnyCard(getState().players[pid]!);
+    return hasAnyCard(getState().players[pid]!) ? null : '目标没有可操作的牌';
+  }
+
+  function isTargetable(pid: number): boolean {
+    return isTargetUnavailableReason(pid) === null;
+  }
+
+  /** 返回 null 表示牌可操作；文本直接用于 title / aria-label，避免界面说“不可用”却不解释。 */
+  function isCardActionableReason(c: Card): string | null {
+    return cardActionReason(c, {
+      pending: pend.value,
+      selectedSub: selected.value?.sub ?? null,
+      hasSecondCard: !!selected2.value,
+      zhangbaOn: zhangbaOn.value,
+      canSha: canSha.value,
+      hp: meP.value?.hp ?? 0,
+      maxHp: meP.value?.maxHp ?? 0,
+      activeMode: activeMode.value,
+      activeSelectionCount: activeSel.value.length,
+      activeSelectionIncludes: activeSel.value.includes(c.id),
+      discardSelectionIds: discardSel.value,
+      discardCount: discardCount.value,
+      guanshiSelectionIds: guanshiSel.value,
+      general: myGeneral.value,
+      isRed: isRedCard(c),
+      altShaCardId: altShaMaterial()?.id,
+      lijianMode: lijianMode.value,
+      lijianCardSelected: !!lijianCard.value,
+    });
+  }
+
+  /** 某张手牌在当前询问下是否可操作；用于牌面可用态和键盘交互。 */
+  function isCardActionable(c: Card): boolean {
+    return isCardActionableReason(c) === null;
+  }
+
+  /** 应答询问时，直接点手牌即可提交；返回 true 表示该牌已被本函数消费。 */
+  function respondWithCard(c: Card): boolean {
+    const p = pend.value;
+    if (!p || !isCardActionable(c)) return false;
+    if (p.kind === 'respondShan') act({ type: 'respondShan', cardId: c.id });
+    else if (p.kind === 'respondSha') act({ type: 'respondSha', cardId: c.id });
+    else if (p.kind === 'respondWuxie') act({ type: 'respondWuxie', cardId: c.id });
+    else if (p.kind === 'respondTao') act({ type: 'respondTao', cardId: c.id });
+    else if (p.kind === 'shaAgain') act({ type: 'shaAgain', cardId: c.id });
+    else if (p.kind === 'jiedao') act({ type: 'respondJiedao', cardId: c.id });
+    else return false;
+    return true;
   }
 
   /** 出牌阶段的卡牌点击语义 */
@@ -212,6 +378,7 @@ export function useInteraction(deps: { game: GameApi }) {
       clickSuppressed = false;
       return;
     }
+    if (respondWithCard(c)) return;
     if (pend.value?.kind === 'play') {
       if (lijianMode.value) {
         if (!lijianCard.value) lijianCard.value = c; // 第一步：选弃置的手牌
@@ -372,6 +539,11 @@ export function useInteraction(deps: { game: GameApi }) {
     }
   }
 
+  /** 座次点击的公开统一入口；详情点击由 TableArea 在非目标态处理。 */
+  function submitSeat(pid: number) {
+    onSeatClick(pid);
+  }
+
   /** 方天画戟确认：单目标走普通使用，多目标走 targetIds */
   function confirmFangtian() {
     if (!selected.value || fangtianTargets.value.length === 0) return;
@@ -379,6 +551,28 @@ export function useInteraction(deps: { game: GameApi }) {
     if (ts.length === 1) act({ type: 'playSha', cardId: selected.value.cardId, targetId: ts[0]! });
     else act({ type: 'playSha', cardId: selected.value.cardId, targetId: ts[0]!, targetIds: ts });
   }
+
+  const targetSelectedCount = computed(() => {
+    if (pend.value?.kind === 'tuxi') return tuxiSel.value.length;
+    if (lijianMode.value && lijianCard.value) return lijianTargets.value.length;
+    if (selected.value?.sub === 'sha' && fangtianEligible.value) return fangtianTargets.value.length;
+    if (selected.value?.sub === 'jiedao') return jiedaoVictim.value == null ? 0 : 1;
+    return 0;
+  });
+
+  const targetCandidateCount = computed(() =>
+    targetingMode.value ? view.value.players.filter(p => isTargetable(p.id)).length : 0,
+  );
+
+  onUnmounted(() => {
+    clearSeatCloseTimer();
+    stopDragListeners();
+    drag.value = null;
+    if (clickSuppressTimer != null) {
+      window.clearTimeout(clickSuppressTimer);
+      clickSuppressTimer = null;
+    }
+  });
 
   return {
     selected,
@@ -398,14 +592,25 @@ export function useInteraction(deps: { game: GameApi }) {
     hoverCard,
     hoverSeat,
     seatTipPos,
+    seatDetailPinned,
     drag,
     targetingMode,
+    selectedCard,
+    selectedCardIds,
+    hasSelection,
+    selectionLabel,
+    interactionBreadcrumb,
     fangtianEligible,
     discardCount,
     canConfirmDiscard,
+    targetCandidateCount,
+    targetSelectedCount,
     seatHoverEnter,
     seatHoverMove,
     seatHoverLeave,
+    seatDetailEnter,
+    openSeatDetail,
+    closeSeatDetail,
     cardPointerDown,
     resetLijian,
     cancelSel,
@@ -413,9 +618,13 @@ export function useInteraction(deps: { game: GameApi }) {
     toggleLijian,
     lijianSeatClick,
     isTargetable,
+    isTargetUnavailableReason,
+    isCardActionable,
+    isCardActionableReason,
     onCardClick,
     onGuanxingClick,
     onSeatClick,
+    submitSeat,
     confirmFangtian,
   };
 }

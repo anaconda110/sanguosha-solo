@@ -12,6 +12,7 @@ import type { Settings } from '../settings';
 export interface Arrow { id: number; x1: number; y1: number; x2: number; y2: number }
 export interface FloatText { id: number; playerId: number; text: string; kind: string }
 export interface Flash { id: number; playerId: number; kind: string }
+export interface CenterPlay { id: number; name: string; targetCount: number }
 
 export function useAnimations(settings: Ref<Settings>) {
   // 已经过动画的事件下标（日志只追加，切片即新事件）
@@ -20,11 +21,24 @@ export function useAnimations(settings: Ref<Settings>) {
   const arrows = ref<Arrow[]>([]);
   const floats = ref<FloatText[]>([]);
   const flashes = ref<Flash[]>([]);
-  // 注意：与原实现一致，enqueueAnimations 的 setTimeout 并未登记进 animTimers，
-  // 它只在 skipAnimations 里被整体清空（当前恒为空——保留原样，行为零变化）。
+  const centerPlay = ref<CenterPlay | null>(null);
   const animTimers: number[] = [];
   const seatEls: Record<number, HTMLElement | null> = {};
   const seatsBox = ref<HTMLElement | null>(null);
+
+  /** 所有演出延时统一登记，跳过/新局/回放时可彻底取消，避免卸载后更新 Ref。 */
+  function schedule(callback: () => void, delay: number) {
+    const id = window.setTimeout(() => {
+      const index = animTimers.indexOf(id);
+      if (index >= 0) animTimers.splice(index, 1);
+      callback();
+    }, Math.max(0, delay));
+    animTimers.push(id);
+  }
+
+  function clearTimers() {
+    for (const id of animTimers.splice(0)) window.clearTimeout(id);
+  }
 
   /** 桌面容器与座次元素的 DOM 登记（表格区模板 :ref 调用） */
   function setSeatsBox(el: unknown) {
@@ -50,7 +64,7 @@ export function useAnimations(settings: Ref<Settings>) {
       x2: rc.left + rc.width / 2 - rb.left,
       y2: rc.top + rc.height / 2 - rb.top,
     });
-    window.setTimeout(() => {
+    schedule(() => {
       arrows.value = arrows.value.filter(x => x.id !== id);
     }, 700);
   }
@@ -58,7 +72,7 @@ export function useAnimations(settings: Ref<Settings>) {
   function spawnFloat(playerId: number, text: string, kind: string) {
     const id = ++animSeq;
     floats.value.push({ id, playerId, text, kind });
-    window.setTimeout(() => {
+    schedule(() => {
       floats.value = floats.value.filter(f => f.id !== id);
     }, 1500);
   }
@@ -66,7 +80,7 @@ export function useAnimations(settings: Ref<Settings>) {
   function spawnFlash(playerId: number, kind: string) {
     const id = ++animSeq;
     flashes.value.push({ id, playerId, kind });
-    window.setTimeout(() => {
+    schedule(() => {
       flashes.value = flashes.value.filter(f => f.id !== id);
     }, 850);
   }
@@ -106,6 +120,8 @@ export function useAnimations(settings: Ref<Settings>) {
    */
   function enqueueAnimations(fromIdx: number, state: GameState, replaying: boolean) {
     if (replaying) {
+      clearTimers();
+      centerPlay.value = null;
       animIdx = state.log.length; // 回放不演出
       return;
     }
@@ -118,7 +134,12 @@ export function useAnimations(settings: Ref<Settings>) {
         case 'playCard': {
           const name = CARD_INFO[e.card].display;
           const ts = e.targets ?? (e.target != null ? [e.target] : []);
-          window.setTimeout(() => {
+          schedule(() => {
+            const centerId = ++animSeq;
+            centerPlay.value = { id: centerId, name, targetCount: ts.length };
+            schedule(() => {
+              if (centerPlay.value?.id === centerId) centerPlay.value = null;
+            }, 1150);
             for (const t of ts) {
               spawnArrow(e.player, t);
               spawnFloat(t, `【${name}】`, 'card');
@@ -128,36 +149,36 @@ export function useAnimations(settings: Ref<Settings>) {
           break;
         }
         case 'damage':
-          window.setTimeout(() => {
+          schedule(() => {
             spawnFlash(e.player, 'dmg');
             spawnFloat(e.player, `-${e.amount}`, 'dmg');
           }, delay);
           break;
         case 'heal':
-          window.setTimeout(() => spawnFloat(e.player, `+${e.amount}`, 'heal'), delay);
+          schedule(() => spawnFloat(e.player, `+${e.amount}`, 'heal'), delay);
           break;
         case 'dying':
-          window.setTimeout(() => spawnFlash(e.player, 'dying'), delay);
+          schedule(() => spawnFlash(e.player, 'dying'), delay);
           break;
         case 'death':
-          window.setTimeout(() => spawnFloat(e.player, '阵亡', 'death'), delay);
+          schedule(() => spawnFloat(e.player, '阵亡', 'death'), delay);
           break;
         case 'judge':
-          window.setTimeout(
+          schedule(
             () => spawnFloat(e.player, `判定 ${e.card.suit}${e.card.rank}【${CARD_INFO[e.card.sub].display}】`, 'judge'),
             delay,
           );
           break;
         case 'skill':
         case 'judgeModify':
-          window.setTimeout(() => spawnFloat(e.player, `【${SKILL_INFO[e.sub].display}】`, 'card'), delay);
+          schedule(() => spawnFloat(e.player, `【${SKILL_INFO[e.sub].display}】`, 'card'), delay);
           break;
         case 'ability':
-          window.setTimeout(() => spawnFloat(e.player, `【${CARD_INFO[e.sub].display}】`, 'card'), delay);
+          schedule(() => spawnFloat(e.player, `【${CARD_INFO[e.sub].display}】`, 'card'), delay);
           break;
         case 'negate':
           if (e.targetId != null) {
-            window.setTimeout(() => spawnFloat(e.targetId!, '无懈可击！', 'wuxie'), delay);
+            schedule(() => spawnFloat(e.targetId!, '无懈可击！', 'wuxie'), delay);
           }
           break;
       }
@@ -167,18 +188,21 @@ export function useAnimations(settings: Ref<Settings>) {
 
   /** 动画跳过：点桌面空白处立即结算所有待播演出（M20） */
   function skipAnimations(logLen: number) {
-    for (const id of animTimers.splice(0)) clearTimeout(id);
+    clearTimers();
     animIdx = logLen;
     arrows.value = [];
     floats.value = [];
     flashes.value = [];
+    centerPlay.value = null;
   }
 
-  /** 新局/续局：清空待播演出，且不补演开场事件 */
+  /** 新局/续局/回放：清空待播演出，且不补演开场事件 */
   function clearAndSync(logLen: number) {
+    clearTimers();
     arrows.value = [];
     floats.value = [];
     flashes.value = [];
+    centerPlay.value = null;
     animIdx = logLen;
   }
 
@@ -214,6 +238,7 @@ export function useAnimations(settings: Ref<Settings>) {
     arrows,
     floats,
     flashes,
+    centerPlay,
     setSeatsBox,
     setSeatEl,
     enqueueAnimations,

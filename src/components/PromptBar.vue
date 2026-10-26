@@ -8,6 +8,7 @@ import type { GameApi, InteractionApi, SettingsApi } from '../composables/types'
 import { disp, SUIT_LIST } from '../composables/labels';
 
 const props = defineProps<{ game: GameApi; interact: InteractionApi; ui: SettingsApi; thinking: boolean }>();
+const { thinking } = props;
 const {
   view, humanId, spectate, me, meP, myGeneral, mySkills, pend, getState, act,
   altShaMaterial, shaMaterialNow, hasCardInHand, jijiuMaterial, lijianReady,
@@ -18,6 +19,60 @@ const {
   discardCount, canConfirmDiscard, resetLijian, cancelSel, toggleLijian, onGuanxingClick, confirmFangtian,
 } = props.interact;
 const { showDebug } = props.ui;
+
+/** 顶部标题把“当前在做什么”从一长串说明中提出来，正文仍保留完整规则与操作。 */
+const promptTitle = computed(() => {
+  if (view.value.winner) return '战局结束';
+  if (spectate.value) return '观战中';
+  if (thinking.value) return `${waitingName.value} 正在思考`;
+  const p = pend.value;
+  if (!p) return `等待 ${waitingName.value} 行动`;
+  if (p.kind === 'play') {
+    if (activeMode.value) return `发动【${SKILL_INFO[activeMode.value].display}】`;
+    if (lijianMode.value) return '发动【离间】';
+    if (selected.value) return '请选择目标';
+    return '轮到你出牌';
+  }
+  const titles: Partial<Record<typeof p.kind, string>> = {
+    respondShan: '请打出【闪】',
+    respondSha: '请打出【杀】',
+    respondWuxie: '是否使用【无懈可击】',
+    respondTao: '濒死求桃',
+    shaAgain: '是否再次出【杀】',
+    discard: '请弃置手牌',
+    pickCard: '请选择一张牌',
+    trigger: '是否发动技能',
+    skillCard: '请选择改判牌',
+    guanshi: '是否发动【贯石斧】',
+    guanxing: '请选择观星牌',
+    liuli: '是否发动【流离】',
+    fanjian: '请选择一种花色',
+    wuguPick: '请从五谷牌中选一张',
+    jiedao: '请决定是否出【杀】',
+    lordSkill: '主公技求援',
+    drawPhase: '摸牌阶段抉择',
+    tuxi: '请选择突袭目标',
+    yiji: '请选择遗计牌的归属',
+    cixiong: '请选择雌雄双股剑效果',
+  };
+  return titles[p.kind] ?? '请完成当前步骤';
+});
+
+const promptStep = computed(() => {
+  if (view.value.winner) return '终局';
+  if (spectate.value) return '观战';
+  if (thinking.value || !pend.value) return '等待';
+  if (pend.value.kind === 'play' && (selected.value || activeMode.value || lijianMode.value)) return '选择目标';
+  if (pend.value.kind === 'play') return '出牌阶段';
+  return '需要响应';
+});
+
+const promptTone = computed(() => {
+  if (view.value.winner) return 'prompt-ended';
+  if (thinking.value || !pend.value) return 'prompt-waiting';
+  if (['respondShan', 'respondSha', 'respondWuxie', 'respondTao', 'shaAgain', 'jiedao'].includes(pend.value.kind)) return 'prompt-danger';
+  return 'prompt-action';
+});
 
 /** 观战模式下的提示文字（当前轮到谁、在等什么） */
 const spectateHint = computed(() => {
@@ -176,14 +231,23 @@ function shaAgain(use: boolean) {
 </script>
 
 <template>
-  <section class="prompt">
-    <div v-if="showDebug" style="font-size:11px;color:#e05555">
+  <section class="prompt" :class="promptTone" aria-live="polite">
+    <header class="prompt-head">
+      <div class="prompt-heading">
+        <span class="prompt-kicker">TURN GUIDE</span>
+        <span class="prompt-title">{{ promptTitle }}</span>
+      </div>
+      <span class="prompt-step"><i aria-hidden="true" />{{ promptStep }}</span>
+    </header>
+
+    <div class="prompt-body">
+    <div v-if="showDebug" class="prompt-debug">
       DEBUG humanId={{ humanId }} spectate={{ spectate }} pend={{ pend ? pend.kind + '@' + pend.playerId : 'null' }}
       viewPending={{ view.pending ? view.pending.kind + '@' + view.pending.playerId : 'null' }}
       meAlive={{ !!view.me }} winner={{ !!view.winner }}
       <button class="btn ghost" @click="showDebug = false">关</button>
     </div>
-    <template v-if="view.winner">对局结束——可用下方回放逐步检视整局。</template>
+    <template v-if="view.winner">对局结束——可用上方回放逐步检视整局。</template>
     <template v-else-if="spectate">观战中 —— {{ spectateHint }}</template>
     <template v-else-if="pend?.kind === 'play'">
       <template v-if="activeMode">
@@ -452,20 +516,123 @@ function shaAgain(use: boolean) {
     </template>
     <template v-else-if="thinking"><span class="thinking">🤔 {{ waitingName }} 思考中…</span></template>
     <template v-else>等待 {{ waitingName }} 行动…</template>
+    </div>
   </section>
 </template>
 
 <style>
 .prompt {
-  background: #22262f;
-  border-radius: 8px;
-  padding: 12px;
-  min-height: 46px;
+  position: relative;
+  min-height: 94px;
   margin-bottom: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line, #34404a);
+  border-radius: 14px;
+  background:
+    linear-gradient(115deg, rgb(217 181 111 / 7%), transparent 38%),
+    linear-gradient(180deg, rgb(255 255 255 / 3%), transparent 35%),
+    var(--panel, #151c22);
+  box-shadow: var(--shadow-sm, 0 8px 20px rgb(0 0 0 / 18%));
+}
+.prompt::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--gold, #d9b56f);
+  opacity: 0.78;
+}
+.prompt.prompt-danger::before { background: #c95d5d; }
+.prompt.prompt-waiting::before { background: #5e7f75; }
+.prompt.prompt-ended::before { background: linear-gradient(#d9b56f, #62b47a); }
+.prompt-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 14px 9px 17px;
+  border-bottom: 1px solid rgb(255 255 255 / 6%);
+  background: rgb(0 0 0 / 10%);
+}
+.prompt-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
   gap: 10px;
+}
+.prompt-kicker {
+  flex: 0 0 auto;
+  color: #6f7d84;
+  font: 700 8px/1.2 Georgia, serif;
+  letter-spacing: 0.2em;
+}
+.prompt-title {
+  overflow: hidden;
+  color: var(--text, #f2ead8);
+  font-family: 'Noto Serif SC', 'Songti SC', serif;
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-step {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid rgb(217 181 111 / 26%);
+  border-radius: 999px;
+  color: var(--gold, #d9b56f);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.prompt-step i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 7px currentColor;
+}
+.prompt-danger .prompt-step {
+  border-color: rgb(201 93 93 / 35%);
+  color: #ef9999;
+}
+.prompt-waiting .prompt-step {
+  border-color: rgb(94 127 117 / 35%);
+  color: #94b6a9;
+}
+.prompt-body {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 8px;
   flex-wrap: wrap;
+  padding: 11px 14px 12px 17px;
+  color: #c4cdd1;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.prompt .btn {
+  min-height: 30px;
+  padding: 5px 11px;
+  font-size: 12px;
+}
+.prompt .btn.ghost {
+  background: rgb(255 255 255 / 2%);
+}
+.prompt-debug {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px dashed rgb(224 85 85 / 38%);
+  border-radius: 7px;
+  color: #e58b8b;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 /* 无懈链状态提示：抵消中 / 已恢复（M11） */
 .wuxie-chain {
@@ -475,15 +642,47 @@ function shaAgain(use: boolean) {
 }
 .guanxing-row {
   display: flex;
+  width: 100%;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: 2px;
   flex-wrap: wrap;
 }
 .gx-chip {
   width: 64px;
   height: 88px;
   position: relative;
+  display: grid;
+  place-items: center;
+  border: 1px solid #8b7044;
+  border-radius: 7px;
+  background: linear-gradient(180deg, #e8dfcc, #d5cab5);
+  color: #28221a;
   cursor: pointer;
+  box-shadow: 0 3px 0 #0b0d0f, 0 6px 12px rgb(0 0 0 / 24%);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.gx-chip:hover,
+.gx-chip:focus-visible {
+  z-index: 2;
+  outline: none;
+  transform: translateY(-5px);
+  box-shadow: 0 8px 16px rgb(0 0 0 / 36%), 0 0 0 2px var(--gold, #d9b56f);
+}
+.gx-chip.selected {
+  transform: translateY(-6px);
+  border-color: #f0d393;
+  box-shadow: 0 8px 16px rgb(0 0 0 / 36%), 0 0 0 3px var(--gold, #d9b56f);
+}
+.gx-chip .cname {
+  color: #34271a;
+  font-family: 'Noto Serif SC', 'Songti SC', serif;
+  font-size: 16px;
+  font-weight: 800;
+}
+.gx-chip .csuit {
+  position: absolute;
+  top: 5px;
+  font-size: 10px;
 }
 .gx-order {
   position: absolute;
@@ -492,14 +691,15 @@ function shaAgain(use: boolean) {
   right: 0;
   text-align: center;
   font-size: 12px;
-  color: #7fd37f;
+  color: #2d7145;
+  font-weight: 800;
 }
 .skill-trigger {
-  color: #e5b567;
-  font-weight: bold;
+  color: var(--gold-bright, #f0d393);
+  font-weight: 700;
 }
 .thinking {
-  color: #e5b567;
+  color: var(--gold, #d9b56f);
   animation: pulse 1.2s ease-in-out infinite;
 }
 @keyframes pulse {
@@ -509,6 +709,32 @@ function shaAgain(use: boolean) {
   }
   50% {
     opacity: 0.45;
+  }
+}
+@media (max-width: 760px) {
+  .prompt {
+    min-height: 88px;
+    border-radius: 12px;
+  }
+  .prompt-head {
+    align-items: flex-start;
+    padding: 9px 11px 8px 14px;
+  }
+  .prompt-heading {
+    flex-direction: column;
+    gap: 1px;
+  }
+  .prompt-title {
+    font-size: 15px;
+    white-space: normal;
+  }
+  .prompt-body {
+    gap: 7px;
+    padding: 9px 11px 11px 14px;
+    font-size: 12px;
+  }
+  .prompt .btn {
+    min-height: 32px;
   }
 }
 </style>

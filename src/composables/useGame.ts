@@ -8,7 +8,10 @@ import { setup } from '../engine/setup';
 import { step } from '../engine/step';
 import { GENERAL_SKILLS, type Action, type Card, type CardSub, type GameState, type Suit } from '../engine/types';
 import { viewOf } from '../engine/view';
-import { clearSave, hasSave, loadSave, saveGame } from '../persist';
+import {
+  clearSave, hasSave, loadSave, saveGame, listSaveSlots, saveToSlot, loadSaveSlot, deleteSaveSlot,
+} from '../persist';
+import type { SaveSlotInfo } from '../persist';
 import type { Ref } from 'vue';
 import type { Settings } from '../settings';
 import type { AnimationsApi } from './useAnimations';
@@ -43,8 +46,10 @@ export function useGame(deps: GameDeps) {
   const view = ref(viewOf(state, humanId.value));
   /** 观战模式：无真人手牌与询问，全部由 AI 应答 */
   const spectate = ref(false);
-  /** 是否已有存档（"继续上局"按钮显隐） */
+  /** 是否已有自动续局存档（"继续上局"按钮显隐） */
   const saveExists = ref(hasSave());
+  /** 三个手动槽的轻量摘要；与自动续局槽完全独立 */
+  const saveSlots = ref<SaveSlotInfo[]>(listSaveSlots());
   /** 种子输入框（M15）：显示当前种子，可改后按此开局 */
   const seedInput = ref<number>(seed.value);
   /** 回放进度；null = 实时画面（ADR-0005：seed+动作重演） */
@@ -102,6 +107,42 @@ export function useGame(deps: GameDeps) {
     persist();
   }
 
+  function snapshot() {
+    return { seed: seed.value, humanId: humanId.value, spectate: spectate.value, state };
+  }
+
+  /** 刷新手动槽摘要；读/写/删后调用，坏数据会自然显示为空槽。 */
+  function refreshSaveSlots() {
+    saveSlots.value = listSaveSlots();
+  }
+
+  /** 保存到手动槽；失败时保留旧槽并返回 false。 */
+  function saveCurrentToSlot(slotId: string): boolean {
+    const ok = saveToSlot(slotId, snapshot());
+    if (ok) refreshSaveSlots();
+    return ok;
+  }
+
+  /** 从手动槽恢复一整局；成功后仍会走自动续局写档与 UI 重置链。 */
+  function loadFromSlot(slotId: string): boolean {
+    const sv = loadSaveSlot(slotId);
+    refreshSaveSlots();
+    if (!sv) return false;
+    gameId++;
+    seed.value = sv.seed;
+    spectate.value = sv.spectate ?? sv.humanId < 0;
+    humanId.value = sv.spectate || sv.humanId < 0 ? -1 : sv.humanId;
+    seedInput.value = seed.value;
+    state = sv.state;
+    resetUi();
+    return true;
+  }
+
+  function deleteSlot(slotId: string) {
+    deleteSaveSlot(slotId);
+    refreshSaveSlots();
+  }
+
   /** 存档（M15）：每次状态推进后写一次；已终局则清档（不必续） */
   function persist() {
     if (state.winner) {
@@ -109,7 +150,7 @@ export function useGame(deps: GameDeps) {
       saveExists.value = false;
       return;
     }
-    saveGame({ seed: seed.value, humanId: humanId.value, spectate: spectate.value, state });
+    saveGame(snapshot());
     saveExists.value = true;
   }
 
@@ -163,6 +204,7 @@ export function useGame(deps: GameDeps) {
     seed.value = sv.seed;
     spectate.value = sv.spectate ?? sv.humanId < 0;
     humanId.value = sv.spectate || sv.humanId < 0 ? -1 : sv.humanId;
+    seedInput.value = seed.value;
     state = sv.state;
     resetUi();
   }
@@ -288,6 +330,7 @@ export function useGame(deps: GameDeps) {
     spectate,
     view,
     saveExists,
+    saveSlots,
     seedInput,
     replayIdx,
     replayTotal,
@@ -309,6 +352,10 @@ export function useGame(deps: GameDeps) {
     newGame,
     newGameWithSeed,
     resumeGame,
+    refreshSaveSlots,
+    saveCurrentToSlot,
+    loadFromSlot,
+    deleteSlot,
     startSpectate,
     showReplay,
     canSha,

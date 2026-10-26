@@ -1,104 +1,270 @@
 <script setup lang="ts">
-// 战报面板（M22 自 App.vue 迁出）：事件日志 → 文案。纯展示，无内部状态。
-// evText 所需的玩家名经 props.players 索引（与 view.players 同序，按 id 取）。
-import { IDENTITY_NAMES, SKILL_INFO, type GameEvent } from '../engine/types';
+// 战报侧栏：公开事件筛选 + 关键事件回放定位。实时模式自动跟随，回放时不抢滚动位置。
+import { computed, nextTick, ref, watch } from 'vue';
+import type { GameEvent } from '../engine/types';
 import type { PublicPlayer } from '../engine/view';
-import { disp, REASON_NAMES, SIDE_NAMES } from '../composables/labels';
+import { describeGameEvent } from '../review/event-text';
+import { isKeyEvent, matchesLogFilter, type LogFilter } from '../interaction/action-hints';
 
-const props = defineProps<{ events: GameEvent[]; players: PublicPlayer[] }>();
+const props = defineProps<{ events: GameEvent[]; players: PublicPlayer[]; replaying?: boolean }>();
+const emit = defineEmits<{ seek: [eventSeq: number] }>();
+const stream = ref<HTMLElement | null>(null);
+const filter = ref<LogFilter>('all');
+const FILTERS: Array<{ id: LogFilter; label: string }> = [
+  { id: 'all', label: '全部' },
+  { id: 'damage', label: '伤害' },
+  { id: 'skill', label: '技能' },
+  { id: 'judge', label: '判定' },
+  { id: 'key', label: '关键' },
+];
+
+/** seq 基于完整 events 计算，不能因为只渲染最近一段而失真。 */
+const visible = computed(() =>
+  props.events
+    .map((event, index) => ({ event, seq: index + 1 }))
+    .filter(entry => matchesLogFilter(entry.event, filter.value))
+    .slice(-80),
+);
 
 function evText(e: GameEvent): string {
-  const players = props.players;
-  const n = (id?: number) => (id == null ? '' : players[id]!.name);
-  switch (e.t) {
-    case 'turnStart':
-      return `── ${n(e.player)} 的回合 ──`;
-    case 'draw':
-      return `${n(e.player)} 摸了 ${e.n} 张牌`;
-    case 'playCard': {
-      const ts = e.targets ?? (e.target != null ? [e.target] : []);
-      return ts.length > 1
-        ? `${n(e.player)} 对 ${ts.map(n).join('、')} 使用【${disp(e.card)}】`
-        : e.target != null
-          ? `${n(e.player)} 对 ${n(e.target)} 使用【${disp(e.card)}】`
-          : `${n(e.player)} 使用【${disp(e.card)}】`;
-    }
-    case 'respond':
-      return e.card
-        ? `${n(e.player)} 打出【${disp(e.card)}】`
-        : e.resp === 'shan'
-          ? `${n(e.player)} 未出【闪】`
-          : e.resp === 'sha'
-            ? `${n(e.player)} 未打出【杀】`
-            : e.resp === 'wuxie'
-              ? `${n(e.player)} 不使用【无懈可击】`
-              : `${n(e.player)} 不使用【桃】`;
-    case 'damage':
-      return `${n(e.player)} 受到 ${e.amount} 点伤害`;
-    case 'heal':
-      return `${n(e.player)} 回复 ${e.amount} 点体力`;
-    case 'dying':
-      return `⚠ ${n(e.player)} 濒死！`;
-    case 'death':
-      return `${n(e.player)} 阵亡，身份是【${IDENTITY_NAMES[e.identity]}】`;
-    case 'rewardDraw':
-      return `${n(e.player)} 摸三张牌（杀死反贼的奖惩）`;
-    case 'penaltyDiscard':
-      return `${n(e.player)} 弃置全部手牌（主公杀死忠臣的惩罚）`;
-    case 'discardCards':
-      return `${n(e.player)} 弃置 ${e.n} 张牌`;
-    case 'wuguReveal':
-      return `五谷丰登亮出【${disp(e.card.sub)}】${e.card.suit}${e.card.rank}`;
-    case 'equip':
-      return `${n(e.player)} 装备了【${disp(e.sub)}】`;
-    case 'unequip':
-      return `${n(e.player)} 的【${disp(e.sub)}】被弃置`;
-    case 'gainCard':
-      return `${n(e.player)} 获得了 ${n(e.from)} 的一张牌`;
-    case 'negate': {
-      // 无懈链（M11）：奇数张 = 抵消生效中；偶数张（≥2）= 被反无懈，恢复生效
-      const what = e.targetId != null ? `【${disp(e.sub)}】对 ${n(e.targetId)} 的效果` : `【${disp(e.sub)}】`;
-      if ((e.chain ?? 1) === 1) return `${n(e.player)} 用【无懈可击】抵消了${what}`;
-      return (e.chain ?? 1) % 2 === 1
-        ? `${n(e.player)} 用【无懈可击】再度抵消了${what}`
-        : `${n(e.player)} 用【无懈可击】反制，${what}恢复`;
-    }
-    case 'judge':
-      return `${n(e.player)} 的【${REASON_NAMES[e.reason]}】判定 → ${e.card.suit}${e.card.rank}【${disp(e.card.sub)}】`;
-    case 'judgeModify':
-      return `${n(e.player)} 发动【${SKILL_INFO[e.sub].display}】改判为 ${e.card.suit}${e.card.rank}【${disp(e.card.sub)}】`;
-    case 'skill':
-      return e.detail
-        ? `${n(e.player)} 发动【${SKILL_INFO[e.sub].display}】（${e.detail}）`
-        : `${n(e.player)} 发动【${SKILL_INFO[e.sub].display}】`;
-    case 'ability':
-      return e.detail
-        ? `${n(e.player)} 发动【${disp(e.sub)}】（${e.detail}）`
-        : `${n(e.player)} 发动【${disp(e.sub)}】`;
-    case 'moveJudgement':
-      return `【${disp(e.sub)}】移至 ${n(e.to)} 的判定区`;
-    case 'gameOver':
-      return `■■ ${SIDE_NAMES[e.side]} 获胜 ■■`;
-  }
+  return describeGameEvent(e, props.players);
+}
+
+watch(
+  () => [props.events.length, filter.value, props.replaying] as const,
+  async () => {
+    await nextTick();
+    if (!props.replaying && stream.value) stream.value.scrollTop = stream.value.scrollHeight;
+  },
+);
+
+function seekEvent(entry: { event: GameEvent; seq: number }) {
+  if (isKeyEvent(entry.event)) emit('seek', entry.seq);
 }
 </script>
 
 <template>
-  <section class="log">
-    <div v-for="(e, i) in events.slice(-40)" :key="i" class="logev">{{ evText(e) }}</div>
+  <section class="log" aria-label="战报">
+    <header class="log-head">
+      <div class="log-heading">
+        <span class="log-eyebrow">BATTLE LOG</span>
+        <strong>战报</strong>
+      </div>
+      <span class="log-count">{{ events.length }} 条</span>
+    </header>
+    <div class="log-filters" role="group" aria-label="筛选战报">
+      <button
+        v-for="item in FILTERS"
+        :key="item.id"
+        type="button"
+        class="log-filter"
+        :class="{ active: filter === item.id }"
+        :aria-pressed="filter === item.id"
+        @click="filter = item.id"
+      >{{ item.label }}</button>
+    </div>
+    <div ref="stream" class="log-stream" role="log" aria-live="polite">
+      <div
+        v-for="entry in visible"
+        :key="entry.seq"
+        class="logev"
+        :class="[`ev-${entry.event.t}`, { seekable: isKeyEvent(entry.event) }]"
+        :data-seq="entry.seq"
+        :role="isKeyEvent(entry.event) ? 'button' : undefined"
+        :tabindex="isKeyEvent(entry.event) ? 0 : undefined"
+        :title="isKeyEvent(entry.event) ? '跳到这个关键事件' : undefined"
+        @click="seekEvent(entry)"
+        @keydown.enter.prevent="seekEvent(entry)"
+        @keydown.space.prevent="seekEvent(entry)"
+      >
+        <span class="log-dot" aria-hidden="true" />
+        <span class="log-text"><span class="log-seq">{{ entry.seq }}</span>{{ evText(entry.event) }}</span>
+      </div>
+      <div v-if="visible.length === 0" class="log-empty">当前筛选下暂无事件</div>
+    </div>
+    <footer class="log-foot">
+      {{ filter === 'all' ? '全部事件' : FILTERS.find(item => item.id === filter)?.label + '事件' }} · 显示最近 {{ visible.length }} 条
+      <span v-if="!replaying"> · 实时跟随</span>
+      <span v-else> · 回放中</span>
+    </footer>
   </section>
 </template>
 
 <style>
 .log {
-  background: #1b1f27;
-  border: 1px solid #2c313c;
-  border-radius: 8px;
-  padding: 8px 12px;
-  max-height: 180px;
+  display: flex;
+  min-height: 300px;
+  height: min(680px, calc(100vh - 128px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line, #34404a);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 3%), transparent 18%),
+    var(--panel, #151c22);
+  box-shadow: var(--shadow-sm, 0 8px 20px rgb(0 0 0 / 18%));
+}
+.log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 14px 11px;
+  border-bottom: 1px solid rgb(255 255 255 / 6%);
+  background: rgb(0 0 0 / 9%);
+}
+.log-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.log-eyebrow {
+  color: #697982;
+  font: 700 8px/1.2 Georgia, serif;
+  letter-spacing: 0.22em;
+}
+.log-heading strong {
+  color: var(--text, #f2ead8);
+  font-family: 'Noto Serif SC', 'Songti SC', serif;
+  font-size: 16px;
+  letter-spacing: 0.08em;
+}
+.log-count {
+  padding: 2px 7px;
+  border: 1px solid #37434b;
+  border-radius: 999px;
+  color: #7e8d96;
+  font-size: 9px;
+}
+.log-filters {
+  display: flex;
+  gap: 4px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgb(255 255 255 / 5%);
+  background: rgb(0 0 0 / 5%);
+}
+.log-filter {
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: #718087;
+  font-size: 10px;
+  cursor: pointer;
+}
+.log-filter:hover,
+.log-filter:focus-visible {
+  border-color: rgb(217 181 111 / 24%);
+  color: #c8b78f;
+  outline: none;
+}
+.log-filter.active {
+  border-color: rgb(217 181 111 / 32%);
+  background: rgb(217 181 111 / 9%);
+  color: var(--gold, #d9b56f);
+  font-weight: 700;
+}
+.log-stream {
+  flex: 1;
   overflow-y: auto;
-  font-size: 13px;
-  line-height: 1.7;
-  color: #9aa3b2;
+  padding: 8px 12px 12px;
+  scrollbar-color: #39464e transparent;
+  scrollbar-width: thin;
+}
+.logev {
+  display: grid;
+  grid-template-columns: 5px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 1px;
+  border-bottom: 1px solid rgb(255 255 255 / 3.5%);
+  color: #9aa7ae;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.logev.seekable {
+  margin: 0 -5px;
+  padding-inline: 5px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.logev.seekable:hover,
+.logev.seekable:focus-visible {
+  outline: none;
+  background: rgb(217 181 111 / 7%);
+}
+.logev:last-child {
+  border-bottom: 0;
+}
+.log-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #557078;
+}
+.log-text {
+  overflow-wrap: anywhere;
+}
+.log-seq {
+  display: inline-block;
+  min-width: 20px;
+  margin-right: 5px;
+  color: #506068;
+  font: 9px/1.2 'Cascadia Mono', Consolas, monospace;
+  text-align: right;
+}
+.ev-damage .log-dot,
+.ev-death .log-dot,
+.ev-dying .log-dot {
+  background: #d56d6d;
+  box-shadow: 0 0 5px rgb(213 109 109 / 45%);
+}
+.ev-damage .log-text,
+.ev-death .log-text,
+.ev-dying .log-text {
+  color: #d7a1a1;
+}
+.ev-heal .log-dot { background: #69be8a; }
+.ev-heal .log-text { color: #a6d4b3; }
+.ev-playCard .log-dot,
+.ev-equip .log-dot,
+.ev-respond .log-dot { background: #c8a860; }
+.ev-skill .log-dot,
+.ev-ability .log-dot { background: #75a9c2; }
+.ev-skill .log-text,
+.ev-ability .log-text { color: #aac7d4; }
+.ev-turnStart .log-text {
+  color: #d7caa9;
+  font-weight: 700;
+}
+.ev-gameOver .log-text {
+  color: #f0cd83;
+  font-weight: 700;
+}
+.log-empty {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  color: #64727a;
+  font-size: 12px;
+}
+.log-foot {
+  padding: 7px 12px;
+  border-top: 1px solid rgb(255 255 255 / 5%);
+  color: #5e6c74;
+  font-size: 9px;
+  text-align: right;
+}
+@media (max-width: 1000px) {
+  .log {
+    height: 300px;
+    min-height: 0;
+  }
+}
+@media (max-width: 760px) {
+  .log {
+    height: 260px;
+    border-radius: 12px;
+  }
 }
 </style>

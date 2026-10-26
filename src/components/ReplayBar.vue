@@ -51,27 +51,52 @@ function onReplaySeek() {
 .replay-bar {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 10px;
-  font-size: 13px;
-  color: #9aa3b2;
-  margin-bottom: 12px;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 5px 6px;
+  border: 1px solid rgb(255 255 255 / 7%);
+  border-radius: 9px;
+  background: rgb(0 0 0 / 14%);
+  color: var(--muted, #8b99a5);
+  font-size: 10px;
+  white-space: nowrap;
 }
 /* 回放拖动条（M15） */
 .replay-seek {
-  width: 220px;
-  accent-color: #e05555;
+  width: 150px;
+  accent-color: var(--gold, #d9b56f);
 }
 .replay-num {
-  width: 68px;
-  padding: 2px 6px;
-  border-radius: 6px;
-  border: 1px solid #3a4250;
-  background: #1b1f27;
-  color: #cfd5df;
-  font-size: 12px;
+  width: 58px;
+  height: 26px;
+  padding: 2px 5px;
+  font-size: 10px;
 }
 .replay-total {
-  color: #6b7280;
+  color: #64727a;
+}
+.replay-bar .btn {
+  min-height: 26px;
+  padding: 2px 7px;
+  font-size: 10px;
+}
+.report-entry {
+  display: flex;
+  justify-content: flex-end;
+}
+.report-open {
+  min-height: 37px;
+  border-color: var(--gold-dim, #8b7044);
+  color: var(--gold-bright, #f0d393);
+}
+@media (max-width: 760px) {
+  .replay-bar {
+    justify-content: flex-start;
+  }
+  .replay-seek {
+    min-width: 110px;
+    flex: 1;
+  }
 }
 </style>
