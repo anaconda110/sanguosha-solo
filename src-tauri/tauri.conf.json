@@ -1,0 +1,71 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "三国杀单机",
+  "version": "../package.json",
+  "identifier": "com.anaconda110.sanguosha",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173/sanguosha-solo/",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build:desktop"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "三国杀单机",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 720,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "maximized": false,
+        "backgroundColor": "#12100d"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'none'; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; worker-src 'self' blob:; connect-src ipc: http://ipc.localhost; media-src 'self' data: blob:",
+      "devCsp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "publisher": "anaconda110",
+    "copyright": "Copyright © 2026 anaconda110",
+    "category": "CardGame",
+    "shortDescription": "三国杀单机五人身份局",
+    "longDescription": "纯浏览器引擎驱动的三国杀单机版，支持 1 人类 + 4 AI、回放复盘与本地存档。",
+    "homepage": "https://github.com/anaconda110/sanguosha-solo",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "startMenuFolder": "三国杀单机",
+        "compression": "lzma"
+      },
+      "wix": {
+        "language": "zh-CN",
+        "upgradeCode": "04f62606-d171-5a99-bff8-49a53afdda62"
+      }
+    }
+  }
+}

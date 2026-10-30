@@ -1,0 +1,17 @@
+[package]
+name = "sanguosha-solo"
+version = "0.1.0"
+description = "三国杀单机（1 人类 + 4 AI）"
+authors = ["anaconda110"]
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+name = "sanguosha_solo_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
